@@ -116,3 +116,26 @@ test('dsp: findQuietestCut lands in the silent gap', () => {
     assert.ok(cut > SR && cut < SR + 0.1 * SR + 320, `cut at ${cut}`);
     assert.ok(countSpeechWindows(applyVAD(tone(1), SR, 20, 0.0025)) > 40);
 });
+
+// --- post-processing ---
+import { removeFillers, applyDictionary, applyAutoFormatting, escapeHtml } from '../src/postprocess';
+
+test('postprocess: removes fillers without leaving stray punctuation, keeps "like"', () => {
+    assert.equal(removeFillers('So, um, we should go'), 'So, we should go');
+    assert.equal(removeFillers('Uh, I like pizza'), 'I like pizza');
+    assert.equal(removeFillers('well hmm okay'), 'well okay');
+});
+
+test('postprocess: dictionary replaces whole words, case-insensitively, literally', () => {
+    assert.equal(applyDictionary('the gooey is nice, gooeys too', [{ sound: 'gooey', replace: 'GUI' }]), 'the GUI is nice, gooeys too');
+    assert.equal(applyDictionary('cost is x', [{ sound: 'x', replace: '$& dollars' }]), 'cost is $& dollars');
+});
+
+test('postprocess: auto formatting capitalizes sentences and ends with punctuation', () => {
+    assert.equal(applyAutoFormatting('hello there. how are you', true, true), 'Hello there. How are you.');
+    assert.equal(applyAutoFormatting('hello', false, false), 'hello');
+});
+
+test('postprocess: escapeHtml neutralizes markup', () => {
+    assert.equal(escapeHtml('<img src=x onerror="a()">'), '&lt;img src=x onerror=&quot;a()&quot;&gt;');
+});

@@ -1,5 +1,6 @@
 import './style.css'
 import { startRecording, stopRecordingDirect, decodeAudioBuffer, setAudioDevice, getVisualizerData, applyVAD } from './audio';
+import { escapeHtml, removeFillers, applyDictionary, applyAutoFormatting, countWords } from './postprocess';
 import { loadModel, transcribeAudio, isModelLoaded, getCurrentDevice, StreamingTranscriptionSession } from './transcribe';
 import { initDiagnostics } from './diagnostics';
 // @ts-ignore
@@ -607,31 +608,6 @@ if (appElement) {
   let playSoundsEnabled = true;
   let showNotifyEnabled = true;
 
-  const escapeHtml = (str: string): string =>
-    str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
-
-  const escapeRegex = (str: string): string => {
-    return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  };
-
-  const applyAutoFormatting = (text: string, autoCap: boolean, autoPunct: boolean): string => {
-    let result = text.trim();
-    if (!result) return result;
-
-    if (autoCap) {
-      // Capitalize first character and any character following sentence-ending punctuation
-      result = result.replace(/(^\s*|[.!?]\s+)([a-z])/g, (_, p1, p2) => p1 + p2.toUpperCase());
-    }
-
-    if (autoPunct) {
-      // If no terminal punctuation, append a period
-      if (!/[.!?]$/.test(result)) {
-        result += '.';
-      }
-    }
-    return result;
-  };
-
   let metricDictations = 0;
   let metricWords = 0;
   let metricTimeSavedSec = 0;
@@ -904,6 +880,8 @@ if (appElement) {
   };
 
   let activeStreamingSession: StreamingTranscriptionSession | null = null;
+  // True when the AI cleanup runs phrase by phrase during recording (so it is skipped at stop).
+  let sessionPolishesWithLlm = false;
 
   const toggleRecording = async () => {
     // Don't record while settings modal is open
@@ -980,6 +958,8 @@ if (appElement) {
         let metricsDirty = false;
 
         let text = '';
+        const sessionForRun = activeStreamingSession;
+        const polishedBySession = sessionPolishesWithLlm;
         if (activeStreamingSession) {
           text = await activeStreamingSession.finalize(trailingAudio);
         } else {
@@ -994,27 +974,15 @@ if (appElement) {
         lap(`transcribed (${text.trim().split(/\s+/).filter(Boolean).length} words)`);
 
         if (text && text.trim().length > 0) {
-          const originalWordsCount = text.trim().split(/\s+/).filter(w => w.length > 0).length;
+          const originalWordsCount = polishedBySession
+            ? Math.max(sessionForRun?.getRawWordCount() ?? 0, countWords(text))
+            : countWords(text);
           let processedText = text.trim();
 
-          if (settings && settings.removeFiller !== false) {
-            // "like" is deliberately not here: it is a real word far more often than a filler.
-            const fillers = ['um', 'uh', 'hmm', 'uhm'];
-            fillers.forEach(f => {
-              const regex = new RegExp(`\\b${f}\\b`, 'gi');
-              processedText = processedText.replace(regex, '');
-            });
-            processedText = processedText.replace(/\s{2,}/g, ' ').trim();
-          }
-
-          dictionaryPairs.forEach(pair => {
-            const sound = pair.sound ? pair.sound.trim() : '';
-            if (!sound) return;
-            const escaped = escapeRegex(sound);
-            const isWord = /^\w+$/.test(sound);
-            const regex = isWord ? new RegExp(`\\b${escaped}\\b`, 'gi') : new RegExp(escaped, 'gi');
-            processedText = processedText.replace(regex, pair.replace);
-          });
+          // Phrases were already cleaned while recording; this pass catches anything that spans
+          // phrase boundaries and (when no session cleaned them) does the whole job.
+          if (settings && settings.removeFiller !== false) processedText = removeFillers(processedText);
+          processedText = applyDictionary(processedText, dictionaryPairs);
 
           // Apply Auto-Capitalization & Auto-Punctuation
           const autoCapEnabled = settings ? (settings.autoCap !== false) : true;
@@ -1023,8 +991,8 @@ if (appElement) {
 
           text = processedText;
 
-          // AI Reformatting step
-          if (settings?.aiReformat && window.electronAPI) {
+          // AI cleanup of the whole text, only if it was not already done phrase by phrase.
+          if (settings?.aiReformat && window.electronAPI && !polishedBySession) {
             const llmStatus = await window.electronAPI.llmStatus();
             if (llmStatus.status === 'ready') {
               statusMessage!.textContent = 'Reformatting...';
@@ -1181,7 +1149,33 @@ if (appElement) {
       }
 
       try {
-        const session = new StreamingTranscriptionSession();
+        // Clean each phrase in the background as soon as it is decoded: fillers, dictionary and,
+        // when enabled and ready, the AI cleanup. This hides most of the AI step behind speaking.
+        const runSettings = window.electronAPI ? await window.electronAPI.getSettings() : null;
+        const removeFillerWords = runSettings?.removeFiller !== false;
+        let llmReady = false;
+        if (runSettings?.aiReformat && window.electronAPI) {
+          try { llmReady = (await window.electronAPI.llmStatus()).status === 'ready'; } catch { }
+        }
+        sessionPolishesWithLlm = llmReady;
+
+        const processSegment = async (rawText: string): Promise<string> => {
+          let t = rawText.trim();
+          if (removeFillerWords) t = removeFillers(t);
+          t = applyDictionary(t, dictionaryPairs);
+          // Very short fragments give a small model nothing to work with and invite rewrites.
+          if (llmReady && countWords(t) >= 3 && window.electronAPI) {
+            try {
+              const result = await window.electronAPI.llmReformat(t, await capturedContextPromise);
+              if (result.success && result.text) t = result.text;
+            } catch (err) {
+              console.warn('[AI Reformat] Phrase cleanup failed, keeping text:', err);
+            }
+          }
+          return t;
+        };
+
+        const session = new StreamingTranscriptionSession(undefined, processSegment);
         activeStreamingSession = session;
 
         // Live preview: show the tail of what has been transcribed so far while the user talks.

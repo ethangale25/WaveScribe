@@ -59,8 +59,10 @@ const PORT = 9333;
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
 const logs = [];
-const proc = spawn(electronPath, [
-    '.',
+// --exe=<path> launches a packaged build (e.g. release/win-unpacked/WaveScribe.exe) instead of the source tree.
+const exe = flag('exe');
+const proc = spawn(exe ? path.resolve(exe) : electronPath, [
+    ...(exe ? [] : ['.']),
     `--user-data-dir=${tempProfile}`,
     `--remote-debugging-port=${PORT}`,
     '--use-fake-ui-for-media-stream',

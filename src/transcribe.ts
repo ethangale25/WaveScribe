@@ -147,9 +147,22 @@ export class StreamingTranscriptionSession {
     private isFinalized = false;
     private lastError: unknown = null;
     private onUpdate: ((partialText: string) => void) | null = null;
+    private rawWordCount = 0;
 
-    /** `transcribe` is injectable so tests can decode in-process instead of through the worker. */
-    constructor(private transcribe: (pcm: Float32Array) => Promise<string> = (pcm) => transcribeAudio(pcm, 30)) { }
+    /**
+     * `transcribe` is injectable so tests can decode in-process instead of through the worker.
+     * `processSegment` cleans each phrase (fillers, dictionary, AI cleanup) in the background as
+     * soon as it is decoded, so by the time recording stops only the last phrase is left to clean.
+     */
+    constructor(
+        private transcribe: (pcm: Float32Array) => Promise<string> = (pcm) => transcribeAudio(pcm, 30),
+        private processSegment: ((text: string) => Promise<string>) | null = null
+    ) { }
+
+    /** Words in the raw transcription, before any cleanup (for the filler-word statistic). */
+    public getRawWordCount(): number {
+        return this.rawWordCount;
+    }
 
     /** Called with the text so far each time another phrase finishes decoding. */
     public setOnUpdate(cb: ((partialText: string) => void) | null): void {
@@ -165,7 +178,15 @@ export class StreamingTranscriptionSession {
 
         const promise: Promise<TranscribedSegment> = (async () => {
             try {
-                const text = await this.transcribe(pcmChunk);
+                let text = await this.transcribe(pcmChunk);
+                this.rawWordCount += text.split(/\s+/).filter(Boolean).length;
+                if (this.processSegment && text.trim()) {
+                    try {
+                        text = await this.processSegment(text);
+                    } catch (err) {
+                        console.warn(`[StreamingSession] Cleanup failed for chunk #${chunkId}, keeping raw text:`, err);
+                    }
+                }
                 return { text, forcedCut: meta.forcedCut };
             } catch (err) {
                 console.warn(`[StreamingSession] Error transcribing chunk #${chunkId}:`, err);

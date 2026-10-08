@@ -13,6 +13,7 @@
   "license": "ISC",
   "type": "module",
   "devDependencies": {
+    "@huggingface/transformers": "^3.8.1",
     "@types/node": "^25.3.3",
     "concurrently": "^9.2.1",
     "electron": "^40.6.1",
@@ -23,7 +24,6 @@
     "vite-plugin-electron-renderer": "^0.14.6"
   },
   "dependencies": {
-    "@huggingface/transformers": "^3.8.1",
     "electron-store": "^11.0.2",
     "koffi": "^3.3.2",
     "node-llama-cpp": "^3.18.1"
@@ -52,7 +52,10 @@
       "dist-electron/**/*",
       "assets/**/*",
       "sounds/**/*",
-      "package.json"
+      "package.json",
+      "!node_modules/@node-llama-cpp/win-arm64/**",
+      "!node_modules/@node-llama-cpp/win-x64-cuda/**",
+      "!node_modules/@node-llama-cpp/win-x64-cuda-ext/**"
     ]
   }
 }

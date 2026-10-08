@@ -9,9 +9,48 @@ let activeDeviceId: string | null = null;
 let audioContext: AudioContext | null = null;
 let analyser: AnalyserNode | null = null;
 let microphoneSource: MediaStreamAudioSourceNode | null = null;
-let scriptProcessor: ScriptProcessorNode | null = null;
+let captureNode: AudioWorkletNode | null = null;
+let flushWaiter: (() => void) | null = null;
 let activeStream: MediaStream | null = null;
 let segmenter: PhraseSegmenter | null = null;
+
+// Runs on the audio rendering thread. Unlike the deprecated ScriptProcessorNode (main thread), a
+// busy main thread (e.g. while a phrase is being decoded) only delays when the queued messages
+// are handled; it can never cause audio to be dropped.
+const CAPTURE_FRAME_SAMPLES = 2048;
+const CAPTURE_WORKLET_SOURCE = `
+class WaveScribeCapture extends AudioWorkletProcessor {
+    constructor() {
+        super();
+        this.buf = new Float32Array(${CAPTURE_FRAME_SAMPLES});
+        this.n = 0;
+        this.port.onmessage = (e) => {
+            if (e.data && e.data.type === 'flush') {
+                if (this.n > 0) {
+                    this.port.postMessage(this.buf.slice(0, this.n));
+                    this.n = 0;
+                }
+                this.port.postMessage({ type: 'flushed' });
+            }
+        };
+    }
+    process(inputs) {
+        const ch = inputs[0] && inputs[0][0];
+        if (ch) {
+            for (let i = 0; i < ch.length; i++) {
+                this.buf[this.n++] = ch[i];
+                if (this.n === this.buf.length) {
+                    this.port.postMessage(this.buf, [this.buf.buffer]);
+                    this.buf = new Float32Array(${CAPTURE_FRAME_SAMPLES});
+                    this.n = 0;
+                }
+            }
+        }
+        return true;
+    }
+}
+registerProcessor('wavescribe-capture', WaveScribeCapture);
+`;
 
 export function setAudioDevice(deviceId: string | null) {
     activeDeviceId = deviceId;
@@ -88,22 +127,31 @@ export async function startRecording(options?: StartRecordingOptions): Promise<v
     microphoneSource = audioContext.createMediaStreamSource(stream);
     microphoneSource.connect(analyser);
 
-    // Direct 16kHz PCM stream capture node (4096 samples buffer = ~85ms at 48kHz, ~256ms at 16kHz)
-    const bufferSize = 4096;
-    scriptProcessor = audioContext.createScriptProcessor(bufferSize, 1, 1);
+    // Direct PCM capture on the audio thread (see CAPTURE_WORKLET_SOURCE).
+    const moduleUrl = URL.createObjectURL(new Blob([CAPTURE_WORKLET_SOURCE], { type: 'application/javascript' }));
+    try {
+        await audioContext.audioWorklet.addModule(moduleUrl);
+    } finally {
+        URL.revokeObjectURL(moduleUrl);
+    }
+    const node = new AudioWorkletNode(audioContext, 'wavescribe-capture', { numberOfInputs: 1, numberOfOutputs: 1, outputChannelCount: [1] });
+    captureNode = node;
 
-    scriptProcessor.onaudioprocess = (event) => {
-        const rawInput = event.inputBuffer.getChannelData(0);
-        if (!rawInput || rawInput.length === 0) return;
-
-        // The input buffer is reused by the browser, so it must be copied/resampled.
-        const pcm16k = contextSampleRate === 16000 ? new Float32Array(rawInput) : downsampleTo16k(rawInput, contextSampleRate);
-        seg.push(pcm16k);
+    node.port.onmessage = (event: MessageEvent) => {
+        const data = event.data;
+        if (data instanceof Float32Array) {
+            if (data.length === 0) return;
+            // Frames arrive in order even if the main thread was busy; resample if the context
+            // could not run at 16 kHz.
+            seg.push(contextSampleRate === 16000 ? data : downsampleTo16k(data, contextSampleRate));
+        } else if (data && data.type === 'flushed') {
+            flushWaiter?.();
+        }
     };
 
-    microphoneSource.connect(scriptProcessor);
-    // Connect to destination to ensure scriptProcessor events fire in Chromium
-    scriptProcessor.connect(audioContext.destination);
+    microphoneSource.connect(node);
+    // The node writes silence; connecting it to the destination makes the browser keep it running.
+    node.connect(audioContext.destination);
 }
 
 /**
@@ -130,11 +178,19 @@ export interface StopRecordingOptions {
 export async function stopRecordingDirect(options?: StopRecordingOptions): Promise<StopRecordingResult> {
     const includeFull = options?.includeFull ?? true;
 
-    // Teardown audio graph
-    if (scriptProcessor) {
-        try { scriptProcessor.disconnect(); } catch (_) { }
-        scriptProcessor.onaudioprocess = null;
-        scriptProcessor = null;
+    // Ask the capture node for the samples it is still holding (up to one frame) so the end of
+    // the last word is not lost, then wait briefly for its acknowledgement.
+    if (captureNode) {
+        const node = captureNode;
+        await new Promise<void>((resolve) => {
+            const timer = setTimeout(resolve, 250);
+            flushWaiter = () => { clearTimeout(timer); resolve(); };
+            node.port.postMessage({ type: 'flush' });
+        });
+        flushWaiter = null;
+        try { node.disconnect(); } catch (_) { }
+        node.port.onmessage = null;
+        captureNode = null;
     }
     if (microphoneSource) {
         try { microphoneSource.disconnect(); } catch (_) { }

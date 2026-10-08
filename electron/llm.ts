@@ -4,6 +4,7 @@ import https from 'https'
 import http from 'http'
 import { app } from 'electron'
 import { detectHardware, HardwareProfile } from './hardware'
+import { isFaithfulCleanup } from './fidelity'
 
 export interface ModelMetadata {
     id: string
@@ -256,6 +257,12 @@ let model: any = null
 let ctx: any = null
 let activeChatSession: any = null
 
+// Dedicated context + sequence for dictation cleanup, created once per loaded model. Creating a
+// context for every dictation cost 100-200ms each time.
+let cleanupCtx: any = null
+let cleanupSeq: any = null
+let cleanupQueue: Promise<unknown> = Promise.resolve()
+
 /** Selects which model initLlm() should prefer (e.g. the user's last choice from a previous run). */
 export function setPreferredModel(modelId: string): void {
     if (OPEN_MODELS.some(m => m.id === modelId)) activeModelId = modelId
@@ -474,10 +481,22 @@ export async function loadModel(modelId: string): Promise<void> {
         ctx = await model.createContext({ contextSize: 4096, sequences: 4 })
 
         status = 'ready'
+        // Pay the one-time context/kernel setup now (in the background) instead of during the
+        // user's first dictation.
+        void warmUpCleanup()
     } catch (err: any) {
         status = 'error'
         errorMessage = err.message || 'Failed to load LLM'
         throw err
+    }
+}
+
+async function warmUpCleanup(): Promise<void> {
+    if (isReasoningModel()) return
+    try {
+        await reformatText('okay thanks')
+    } catch {
+        // Warm-up is best effort only.
     }
 }
 
@@ -495,19 +514,14 @@ export async function initLlm(onDownloadProgress?: (progress: { modelId: string;
     await loadModel(target)
 }
 
+// Tuned against small (1B) models: this wording kept every dictated word (0% changed) on all test
+// inputs, whereas a looser "fix errors" prompt rewrote 25-65% of a long dictation.
 function buildSystemPrompt(surroundingContext?: string): string {
-    let prompt = `You are a text cleanup assistant for a voice dictation app. Your ONLY job is to fix the formatting and minor errors in dictated text. Rules:
-- Fix capitalization, punctuation, and spacing
-- Fix obvious speech-to-text errors (homophones, missing words)
-- Do NOT add new content or change the meaning
-- Do NOT add greetings, explanations, or commentary
-- Output ONLY the corrected text, nothing else
-- If the text looks fine, return it unchanged
-- Keep the same tone and style as the input`
+    let prompt = `You add punctuation and capitalization to dictated speech. Keep every word exactly as spoken, in the same order. Never summarize, rephrase, shorten, or drop words. Never change "I" to "you". Reply with the corrected text only.`
 
     if (surroundingContext && surroundingContext.trim().length > 0) {
-        const trimmed = surroundingContext.slice(-800)
-        prompt += `\n\nThe user is typing into a text field that already contains:\n"""${trimmed}"""`
+        const trimmed = surroundingContext.slice(-400)
+        prompt += `\n\nFor reference only, the text field already contains (do not repeat or answer it):\n"""${trimmed}"""`
     }
 
     return prompt
@@ -516,8 +530,34 @@ function buildSystemPrompt(surroundingContext?: string): string {
 const REFORMAT_TIMEOUT_MS = 10000
 const REFORMAT_MAX_INPUT_CHARS = 5000
 
-export async function reformatText(rawText: string, surroundingContext?: string): Promise<string> {
-    if (status !== 'ready' || !model) {
+/** Reasoning models write chain-of-thought into their output; unusable for in-place cleanup. */
+function isReasoningModel(): boolean {
+    return activeModelId.startsWith('deepseek-r1')
+}
+
+async function ensureCleanupSequence(): Promise<any> {
+    if (!cleanupCtx || cleanupCtx.disposed) {
+        cleanupCtx = await model.createContext({ contextSize: 4096 })
+        cleanupSeq = cleanupCtx.getSequence()
+    }
+    return cleanupSeq
+}
+
+function resetCleanupContext(): void {
+    try { cleanupCtx?.dispose() } catch { }
+    cleanupCtx = null
+    cleanupSeq = null
+}
+
+export function reformatText(rawText: string, surroundingContext?: string): Promise<string> {
+    // One cleanup at a time: they share a single sequence.
+    const run = cleanupQueue.then(() => reformatTextNow(rawText, surroundingContext), () => reformatTextNow(rawText, surroundingContext))
+    cleanupQueue = run.catch(() => undefined)
+    return run
+}
+
+async function reformatTextNow(rawText: string, surroundingContext?: string): Promise<string> {
+    if (status !== 'ready' || !model || isReasoningModel()) {
         return rawText
     }
     // Very long dictations would not fit the cleanup context; paste them as dictated.
@@ -527,14 +567,13 @@ export async function reformatText(rawText: string, surroundingContext?: string)
 
     const { LlamaChatSession } = await import('node-llama-cpp')
 
-    let tempCtx: any = null
     let session: any = null
     const abort = new AbortController()
     const timer = setTimeout(() => abort.abort(), REFORMAT_TIMEOUT_MS)
     try {
-        tempCtx = await model.createContext({ contextSize: 4096 })
+        const seq = await ensureCleanupSequence()
         session = new LlamaChatSession({
-            contextSequence: tempCtx.getSequence(),
+            contextSequence: seq,
             systemPrompt: buildSystemPrompt(surroundingContext)
         })
 
@@ -556,6 +595,12 @@ export async function reformatText(rawText: string, surroundingContext?: string)
             return rawText
         }
 
+        // Cleanup may punctuate and fix a slip, but must not rewrite what was said.
+        if (!isFaithfulCleanup(rawText, cleaned)) {
+            console.warn('[LLM] Cleanup changed too many words; keeping the original text')
+            return rawText
+        }
+
         return cleaned
     } catch (err) {
         if (abort.signal.aborted) {
@@ -563,11 +608,13 @@ export async function reformatText(rawText: string, surroundingContext?: string)
         } else {
             console.error('[LLM] Inference error:', err)
         }
+        // The sequence may be in an undefined state after an abort/error; start clean next time.
+        resetCleanupContext()
         return rawText
     } finally {
         clearTimeout(timer)
-        try { session?.dispose() } catch { }
-        try { tempCtx?.dispose() } catch { }
+        try { session?.dispose({ disposeSequence: false }) } catch { }
+        try { await cleanupSeq?.clearHistory() } catch { resetCleanupContext() }
     }
 }
 
@@ -656,6 +703,7 @@ export function abortChat(): void {
 }
 
 export function disposeLlm(): void {
+    resetCleanupContext()
     try { activeChatSession?.dispose() } catch { }
     try { ctx?.dispose() } catch { }
     try { model?.dispose() } catch { }

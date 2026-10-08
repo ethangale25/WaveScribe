@@ -7,3 +7,4 @@ release/
 tools/eval/run.mjs
 tools/eval/data/
 venv/
+.test-build/

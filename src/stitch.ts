@@ -41,6 +41,7 @@ function dropFalseSentenceEnd(text: string): string {
 
 export function stitchSegments(segments: TranscribedSegment[]): string {
     const parts: string[] = [];
+    const endedAtPause: boolean[] = [];
     let carryForcedCut = false;
 
     for (const seg of segments) {
@@ -56,7 +57,15 @@ export function stitchSegments(segments: TranscribedSegment[]): string {
         }
 
         parts.push(text);
+        endedAtPause.push(!seg.forcedCut);
         carryForcedCut = seg.forcedCut;
+    }
+
+    // Some models (Moonshine) emit no punctuation at all. A phrase that ended at a real pause and
+    // is followed by more speech almost always ended a sentence, so supply the missing full stop.
+    // The last phrase is left alone: the app's auto-punctuation handles the end of the text.
+    for (let i = 0; i < parts.length - 1; i++) {
+        if (endedAtPause[i] && !/[.!?,;:…]$/.test(parts[i])) parts[i] += '.';
     }
 
     return parts.join(' ').replace(/\s{2,}/g, ' ').trim();

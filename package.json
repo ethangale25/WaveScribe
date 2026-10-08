@@ -6,7 +6,8 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build && electron-builder",
-    "eval:build": "esbuild tools/eval/run.ts --bundle --platform=node --format=esm --outfile=tools/eval/run.mjs --external:@huggingface/transformers --external:onnxruntime-node --external:sharp --log-level=warning"
+    "eval:build": "esbuild tools/eval/run.ts --bundle --platform=node --format=esm --outfile=tools/eval/run.mjs --external:@huggingface/transformers --external:onnxruntime-node --external:sharp --log-level=warning",
+    "test": "esbuild tests/text-pipeline.test.ts --bundle --platform=node --format=esm --outfile=.test-build/text-pipeline.test.mjs --log-level=warning && node --test .test-build/text-pipeline.test.mjs"
   },
   "keywords": [],
   "author": "",

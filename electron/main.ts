@@ -288,6 +288,11 @@ public class Kbd {
 
 // IPC commands for text injection: set clipboard, send Ctrl+V, restore clipboard.
 ipcMain.handle('insert-text', async (event, text: string) => {
+    // Debug/test switch: report success without touching the clipboard or the focused app.
+    if (process.env.WAVESCRIBE_NO_PASTE) {
+        console.log('[PasteDone] ' + Date.now());
+        return { success: true };
+    }
     try {
         const previousClipboard = clipboard.readText();
         clipboard.writeText(text);

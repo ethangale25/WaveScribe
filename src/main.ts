@@ -98,6 +98,10 @@ declare global {
   }
 }
 
+// Default for new profiles. Measured in the real app (14s clip, CPU): Moonshine Base returns the
+// final text ~350ms after stop with near-perfect accuracy vs 1.3-2.7s for the Whisper models.
+const DEFAULT_MODEL_ID = 'onnx-community/moonshine-base-ONNX';
+
 // Estimated VRAM (MB) each model needs per precision on WebGPU.
 // 'auto' on WebGPU defaults to fp32, so it shares the fp32 estimate.
 const MODEL_VRAM_MB: Record<string, Record<string, number>> = {
@@ -382,6 +386,7 @@ if (appElement) {
                 <span class="slider round"></span>
               </label>
             </div>
+            <small style="display:block; color:var(--text-secondary); margin: -6px 0 10px 0;">Tip: Moonshine models are usually faster on CPU than on the GPU.</small>
             <small id="webgpu-warning" style="display:none; color:var(--red); margin-top:-6px; margin-bottom:10px;">WebGPU is not available on this system. Falling back to CPU.</small>
             <div class="form-group switch-group">
               <label>Voice Activity Detection (trim silence)</label>
@@ -911,6 +916,8 @@ if (appElement) {
     if (isChatDictating) return;
 
     if (isRecording) {
+      const tStop = performance.now();
+      const lap = (label: string) => console.log(`[Timing] ${label}: ${Math.round(performance.now() - tStop)}ms since stop`);
       isProcessing = true;
       isRecording = false;
 
@@ -955,6 +962,8 @@ if (appElement) {
           includeFull: activeStreamingSession === null
         });
 
+        lap('audio stopped');
+
         if (!hadAudio) {
           statusDot!.className = 'status-indicator green flash';
           statusMessage!.textContent = 'Ready';
@@ -981,6 +990,8 @@ if (appElement) {
           }
           text = await transcribeAudio(audioForTranscription, chunkSize);
         }
+
+        lap(`transcribed (${text.trim().split(/\s+/).filter(Boolean).length} words)`);
 
         if (text && text.trim().length > 0) {
           const originalWordsCount = text.trim().split(/\s+/).filter(w => w.length > 0).length;
@@ -1030,6 +1041,8 @@ if (appElement) {
               }
             }
           }
+
+          lap('post-processing + AI cleanup done');
 
           const finalWordsCount = text.split(/\s+/).filter((w: string) => w.length > 0).length;
           const fillersRemoved = Math.max(0, originalWordsCount - finalWordsCount);
@@ -1089,6 +1102,7 @@ if (appElement) {
           historyItems = historyItems.filter(item => now - item.timestamp <= thirtyDaysMs);
 
           await insertPromise;
+          lap('pasted');
 
           renderHistory(now);
 
@@ -1350,7 +1364,7 @@ if (appElement) {
   });
 
   const refreshSettingsModelStatus = async () => {
-    const selectedModel = inputModel?.value || 'Xenova/whisper-tiny.en';
+    const selectedModel = inputModel?.value || DEFAULT_MODEL_ID;
     const details = MODEL_DETAILS[selectedModel] || { name: selectedModel, shortName: selectedModel, sizeText: '~100 MB', approxBytes: 100 * 1024 * 1024 };
 
     const modelStatusBadge = document.getElementById('model-status-badge');
@@ -1403,7 +1417,7 @@ if (appElement) {
 
   const btnPreloadModel = document.getElementById('btn-preload-model');
   btnPreloadModel?.addEventListener('click', async () => {
-    const selectedModel = inputModel?.value || 'Xenova/whisper-tiny.en';
+    const selectedModel = inputModel?.value || DEFAULT_MODEL_ID;
     if (btnPreloadModel) btnPreloadModel.style.display = 'none';
     const settingsProgress = document.getElementById('settings-model-progress');
     if (settingsProgress) settingsProgress.style.display = 'block';
@@ -1809,7 +1823,7 @@ if (appElement) {
   }
 
   // ── Model loading ──────────────────────────────────────────────────────────
-  let currentModelId = 'Xenova/whisper-tiny.en';
+  let currentModelId = DEFAULT_MODEL_ID;
 
   const modelErrorActions = document.getElementById('model-error-actions');
   const modelRetryBtn = document.getElementById('model-retry-btn');
@@ -2027,7 +2041,7 @@ if (appElement) {
 
   if (window.electronAPI) {
     window.electronAPI.getSettings().then(async (settings) => {
-      const modelId = settings?.model ?? 'Xenova/whisper-tiny.en';
+      const modelId = settings?.model ?? DEFAULT_MODEL_ID;
 
       // Pre-flight VRAM check: if WebGPU is stored, verify the model+precision
       // actually fits before calling loadModel — the OOM RangeError from ONNX
@@ -2045,7 +2059,7 @@ if (appElement) {
       attemptLoadModel(modelId);
     });
   } else {
-    attemptLoadModel('Xenova/whisper-tiny.en');
+    attemptLoadModel(DEFAULT_MODEL_ID);
   }
 
   // --- Resizer Logic ---

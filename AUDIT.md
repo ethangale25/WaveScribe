@@ -6,6 +6,40 @@ Severity: **[C]** critical / user-visible breakage · **[H]** high · **[M]** me
 
 ---
 
+## Implementation status (updated after the first execution pass)
+
+**Measured in the real app** (`tools/eval/drive-app.mjs`: fake microphone playing a 14 s clip, stopping right after the last word):
+
+| Setup | Stop → text pasted |
+|---|---|
+| Original code (your settings), tail-drop bug patched in a test copy | 2.7–3.6 s (and one garbage result) |
+| Original code, unpatched | ~1.2–1.4 s, but the **last sentence was missing** every time |
+| Current code, your settings (whisper-tiny / WebGPU + AI cleanup) | ~1.5–1.6 s (2.7 s on a noisy run: WebGPU timing is bimodal) |
+| Current code, Moonshine Base / CPU + AI cleanup | 0.8–1.35 s |
+| Current code, Moonshine Base / CPU, no AI cleanup | ~0.35 s |
+
+Speech-decode portion only, 14 s clip (all configs returned all 42 words): moonshine-tiny CPU 198 ms · moonshine-base CPU 349 ms ·
+whisper-tiny CPU 1308 / WebGPU 959 ms · whisper-base CPU 2729 / WebGPU 1368 ms · moonshine-tiny WebGPU 733 ms · moonshine-base WebGPU 2330 ms.
+
+**Done**
+- §1 critical path: native `SendInput` paste (koffi), caret looked up at record start, paste before disk writes, settings read once, full-recording merge skipped when streaming, mic opened before the start sound, context capture in parallel
+- §2.1 serialized inference · §2.3 inference in a Web Worker + `AudioWorklet` capture (this fixed **lost audio/words** on the CPU path) · §2.4 WASM no longer loaded from a CDN (offline first launch) · §2.6 forced cuts at the quietest point · §2.8 near-silence gate · §2.10 long-form Whisper options only for >30 s · §2.9 Moonshine token cap · §2.12 unified minimum lengths
+- **New bug found and fixed:** `finalize()` set `isFinalized` before dispatching the trailing audio, so the **last phrase of every dictation was silently dropped**
+- §3 "like" no longer treated as a filler · stitcher repairs seams and supplies missing full stops for punctuation-free models (Moonshine)
+- §4 Download button downloads · truncation fixed · status no longer reset by downloads · real abort on timeout · persistent cleanup context · reasoning models skipped · strict prompt + word-level **fidelity gate** (a 1B model was rewriting 25–65% of long dictations) · selected model remembered · Gemma entries relabelled to what they really download · progress throttled
+- §5 single-instance lock · close-to-tray · async cached GPU probe · installer 764 MB → 144 MB (transformers.js moved to devDependencies; arm64/CUDA natives excluded, Vulkan still accelerates NVIDIA/AMD/Intel)
+- §6 hotkey/chat-dictation collision · record blocked until model loaded · XSS via `innerHTML` · model reload only when changed (old pipeline disposed) · safer hotkey presets
+- Phase 0: git, `.gitignore`, stale Python-era files removed, README rewritten, timing logs, unit tests (`npm test`), evaluation tools in `tools/eval`
+- New profiles default to Moonshine Base on CPU. **Existing profiles keep their settings** (yours is whisper-tiny on WebGPU; switching to Moonshine Base with GPU off is the largest remaining speed-up)
+
+**Not done yet**
+- Tentative decoding of the open phrase while speaking, seam re-decode, rolling LLM polish (the AI cleanup step is now >50% of total time in the Moonshine setup), optional "accurate final" pass
+- WASM threads (needs cross-origin isolation via a custom protocol) · onnxruntime-node/DirectML
+- Push-to-talk, queueing hotkey presses during processing, rich-clipboard restore, download resume/cancel/checksum, hotkey-registration warning, splitting `src/main.ts` (still ~2,700 lines)
+- One unexplained intermittent: a single 3-round driver run showed a round that never pasted (right after a heavy `npm ci`); two later runs of 3 rounds were clean
+
+---
+
 ## 1. Where the time goes today (stop → text appears)
 
 When the user presses the hotkey to stop, this runs **in series**:

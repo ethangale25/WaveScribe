@@ -9,7 +9,8 @@
 import fs from 'fs';
 // @ts-ignore
 import { env } from '@huggingface/transformers';
-import { loadModel, transcribeAudio, StreamingTranscriptionSession } from '../../src/transcribe';
+import { loadModel, transcribeAudio } from '../../src/asr-engine';
+import { StreamingTranscriptionSession } from '../../src/transcribe';
 import { PhraseSegmenter } from '../../src/segmenter';
 import { normalizeAudio, applyVAD, ENERGY_THRESHOLD } from '../../src/dsp';
 
@@ -74,7 +75,8 @@ async function main() {
     const baseMs = Date.now() - tBase;
 
     // --- Streaming: decode phrases while "speaking" ---
-    const session = new StreamingTranscriptionSession();
+    // Decode in-process (the app decodes in a Web Worker, which Node does not have).
+    const session = new StreamingTranscriptionSession((pcm) => transcribeAudio(pcm, 30));
     const phrases: string[] = [];
     const segmenter = new PhraseSegmenter((pcm, meta) => {
         phrases.push(`${(pcm.length / 16000).toFixed(1)}s${meta.forcedCut ? ' forced' : ''}`);

@@ -3,8 +3,8 @@ import path from 'path'
 import { fileURLToPath } from 'url'
 import fs from 'fs'
 import Store from 'electron-store'
-import { spawn, execSync } from 'child_process'
-import { detectHardware } from './hardware'
+import { spawn } from 'child_process'
+import { detectHardware, probeGpuVram } from './hardware'
 import {
     downloadModel,
     initLlm,
@@ -17,7 +17,8 @@ import {
     clearChat,
     abortChat,
     isModelDownloaded,
-    OPEN_MODELS
+    OPEN_MODELS,
+    setPreferredModel
 } from './llm'
 import { captureContext } from './context-capture'
 import { sendCtrlV, getCursorPosition } from './win32'
@@ -30,6 +31,15 @@ if (process.platform === 'win32') {
 }
 
 const store = new Store() as any
+
+// Only one instance may run: a second one cannot register the global hotkey and would add a second tray icon.
+const gotSingleInstanceLock = app.requestSingleInstanceLock()
+if (!gotSingleInstanceLock) {
+    app.quit()
+}
+
+let isQuitting = false
+app.on('before-quit', () => { isQuitting = true })
 
 let mainWindow: BrowserWindow | null = null
 let originalBounds: Rectangle | null = null
@@ -142,6 +152,15 @@ function createWindow() {
         mainWindow?.show()
     })
 
+    // Closing the window keeps WaveScribe running in the tray so the global hotkey keeps working.
+    // "Quit" in the tray menu (or the OS shutting down) really exits.
+    mainWindow.on('close', (event) => {
+        if (!isQuitting && tray) {
+            event.preventDefault()
+            mainWindow?.hide()
+        }
+    })
+
     mainWindow.on('maximize', () => {
         mainWindow?.webContents.send('window-maximized', true);
     });
@@ -184,13 +203,26 @@ function createWindow() {
     spinnerWindow.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(spinnerHTML)}`)
 }
 
+app.on('second-instance', () => {
+    if (mainWindow) {
+        if (mainWindow.isMinimized()) mainWindow.restore()
+        mainWindow.show()
+        mainWindow.focus()
+    }
+})
+
 app.whenReady().then(async () => {
+    if (!gotSingleInstanceLock) return
     Menu.setApplicationMenu(null)
+    // Warm the GPU-memory probe in the background so nothing ever blocks on it later.
+    probeGpuVram().catch(() => { })
     const appIcon = getAppIcon()
     createWindow()
     createTray(appIcon)
 
     // Auto-init LLM if enabled and model is already downloaded
+    const savedLlm = store.get('llmModelId') as string | undefined
+    if (savedLlm) setPreferredModel(savedLlm)
     const aiEnabled = store.get('aiReformat', false)
     const hasDownloaded = OPEN_MODELS.some(m => isModelDownloaded(m.id))
     if (aiEnabled && hasDownloaded) {
@@ -565,38 +597,8 @@ ipcMain.handle('hide-cursor-spinner', () => {
     return { success: true };
 });
 
-// Returns the dedicated GPU VRAM in MB, or null if it cannot be determined.
-// Tries nvidia-smi first (accurate for NVIDIA), then falls back to WMI (all vendors).
-ipcMain.handle('get-vram-mb', async (): Promise<number | null> => {
-    // --- NVIDIA via nvidia-smi ---
-    try {
-        const out = execSync(
-            'nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits',
-            { timeout: 2000 }
-        ).toString().trim();
-        const mb = parseInt(out.split('\n')[0]);
-        if (!isNaN(mb) && mb > 0) return mb;
-    } catch { /* not an NVIDIA system or nvidia-smi not in PATH */ }
-
-    // --- Fallback: WMI (AMD / Intel / others) ---
-    // Note: AdapterRAM is a 32-bit DWORD so it saturates at 4294967295 (~4095 MB)
-    // for cards with more than 4 GB — we report that cap rather than nothing.
-    try {
-        const out = execSync(
-            'powershell -NoProfile -Command "' +
-            '(Get-WmiObject Win32_VideoController | ' +
-            'Where-Object {$_.AdapterRAM -gt 0} | ' +
-            'Sort-Object AdapterRAM -Descending | ' +
-            'Select-Object -First 1).AdapterRAM' +
-            '"',
-            { timeout: 4000 }
-        ).toString().trim();
-        const bytes = parseInt(out);
-        if (!isNaN(bytes) && bytes > 0) return Math.round(bytes / (1024 * 1024));
-    } catch { /* WMI unavailable */ }
-
-    return null;
-});
+// Returns the dedicated GPU VRAM in MB, or null if it cannot be determined (probed async, cached).
+ipcMain.handle('get-vram-mb', (): Promise<number | null> => probeGpuVram());
 
 // --- Hardware & LLM IPC Handlers ---
 
@@ -627,6 +629,7 @@ ipcMain.handle('llm-delete-model', (_event, modelId: string) => {
 ipcMain.handle('llm-load-model', async (_event, modelId: string) => {
     try {
         await loadModel(modelId);
+        store.set('llmModelId', modelId);
         return { success: true };
     } catch (err: any) {
         return { success: false, error: err.message || String(err) };

@@ -25,6 +25,11 @@ export async function loadModel(
         throw err;
     }
 
+    // Release the previous pipeline first; otherwise every reload leaks WASM/WebGPU memory.
+    if (transcriber) {
+        await disposeTranscriber();
+    }
+
     currentModelName = modelName;
     currentDevice = device;
 

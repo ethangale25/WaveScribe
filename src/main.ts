@@ -1,6 +1,6 @@
 import './style.css'
 import { startRecording, stopRecordingDirect, decodeAudioBuffer, setAudioDevice, getVisualizerData, applyVAD } from './audio';
-import { loadModel, transcribeAudio, isModelLoaded, StreamingTranscriptionSession } from './transcribe';
+import { loadModel, transcribeAudio, isModelLoaded, getCurrentDevice, StreamingTranscriptionSession } from './transcribe';
 import { initDiagnostics } from './diagnostics';
 // @ts-ignore
 import micIcon from '../assets/mic.svg'
@@ -321,8 +321,8 @@ if (appElement) {
               <select id="setting-hotkey-preset" style="width: 100%;">
                 <option value="CommandOrControl+Shift+Space">Ctrl/Cmd + Shift + Space</option>
                 <option value="Alt+Space">Alt + Space</option>
-                <option value="CommandOrControl+Space">Ctrl/Cmd + Space</option>
-                <option value="Shift+Space">Shift + Space</option>
+                <option value="CommandOrControl+Alt+Space">Ctrl/Cmd + Alt + Space</option>
+                <option value="CommandOrControl+Shift+D">Ctrl/Cmd + Shift + D</option>
                 <option value="custom">Custom...</option>
               </select>
             </div>
@@ -1745,8 +1745,11 @@ if (appElement) {
       await window.electronAPI.setSetting('vadEnabled', inputVAD.checked);
       await window.electronAPI.setSetting('chunkSize', parseInt(inputChunkSize.value) || 30);
 
-      // Re-initialize model immediately if changed (picks up new device/dtype)
-      attemptLoadModel(inputModel.value);
+      // Reload the speech model only if something that affects it changed (or it never loaded).
+      const newDevice = inputComputeDevice.checked ? 'webgpu' : 'cpu';
+      if (!isModelLoaded() || inputModel.value !== currentModelId || newDevice !== getCurrentDevice()) {
+        attemptLoadModel(inputModel.value);
+      }
 
       // AI Reformatting
       await window.electronAPI.setSetting('aiReformat', inputAiReformat.checked);

@@ -93,8 +93,8 @@ export const OPEN_MODELS: ModelMetadata[] = [
     },
     {
         id: 'gemma-4-e2b',
-        name: 'Gemma 4 E2B Instruct',
-        parameters: 'E2B',
+        name: 'Gemma 2 2B Instruct',
+        parameters: '2B',
         quant: 'Q4_K_M',
         sizeText: '~1.5 GB',
         approxBytes: 1500 * 1024 * 1024,
@@ -103,21 +103,21 @@ export const OPEN_MODELS: ModelMetadata[] = [
         filename: 'gemma-4-e2b-it-Q4_K_M.gguf',
         url: 'https://huggingface.co/bartowski/gemma-2-2b-it-GGUF/resolve/main/gemma-2-2b-it-Q4_K_M.gguf',
         tier: 'lightweight',
-        description: 'Google’s ultra-efficient next-gen Gemma 4 edge 2B model for rapid local inference on any PC.'
+        description: 'Google’s efficient 2B Gemma 2 model for rapid local inference on any PC.'
     },
     {
         id: 'gemma-4-e4b',
-        name: 'Gemma 4 E4B Instruct',
-        parameters: 'E4B',
-        quant: 'Q4_K_M',
-        sizeText: '~2.6 GB',
-        approxBytes: 2600 * 1024 * 1024,
+        name: 'Gemma 2 2B Instruct (High Quality)',
+        parameters: '2B',
+        quant: 'Q8_0',
+        sizeText: '~2.8 GB',
+        approxBytes: 2780 * 1024 * 1024,
         ramNeededText: '~3.6 GB RAM',
         minTotalRamGb: 8,
         filename: 'gemma-4-e4b-it-Q4_K_M.gguf',
         url: 'https://huggingface.co/bartowski/gemma-2-2b-it-GGUF/resolve/main/gemma-2-2b-it-Q8_0.gguf',
         tier: 'lightweight',
-        description: 'Google’s balanced Gemma 4 edge 4B model with high reasoning density and low memory overhead.'
+        description: 'The same Gemma 2 2B at 8-bit precision: closer to full quality, with a larger footprint.'
     },
     {
         id: 'gemma-2-9b',
@@ -135,17 +135,17 @@ export const OPEN_MODELS: ModelMetadata[] = [
     },
     {
         id: 'gemma-4-12b',
-        name: 'Gemma 4 12B Instruct',
-        parameters: '12B',
-        quant: 'Q4_K_M',
-        sizeText: '~7.8 GB',
-        approxBytes: 7800 * 1024 * 1024,
+        name: 'Gemma 2 9B Instruct (High Quality)',
+        parameters: '9B',
+        quant: 'Q6_K',
+        sizeText: '~7.6 GB',
+        approxBytes: 7600 * 1024 * 1024,
         ramNeededText: '~8.8 GB RAM',
         minTotalRamGb: 15,
         filename: 'gemma-4-12b-it-Q4_K_M.gguf',
         url: 'https://huggingface.co/bartowski/gemma-2-9b-it-GGUF/resolve/main/gemma-2-9b-it-Q6_K.gguf',
         tier: 'frontier',
-        description: 'Google’s flagship dense 12B model sitting right at the 16 GB sweet spot with frontier-grade reasoning.'
+        description: 'Gemma 2 9B at 6-bit precision for the best quality this family offers on a 16 GB PC.'
     },
     {
         id: 'qwen-2.5-7b',
@@ -255,6 +255,11 @@ let llama: any = null
 let model: any = null
 let ctx: any = null
 let activeChatSession: any = null
+
+/** Selects which model initLlm() should prefer (e.g. the user's last choice from a previous run). */
+export function setPreferredModel(modelId: string): void {
+    if (OPEN_MODELS.some(m => m.id === modelId)) activeModelId = modelId
+}
 
 export function getModelDir(): string {
     const dir = path.join(app.getPath('userData'), 'models')
@@ -373,7 +378,10 @@ export async function downloadModel(
                     downloadLoadedBytes = receivedBytes
                     fileStream.write(chunk)
                     if (totalBytes > 0) {
-                        downloadProgress = Math.min(100, Math.round((receivedBytes / totalBytes) * 100))
+                        const pct = Math.min(100, Math.round((receivedBytes / totalBytes) * 100))
+                        // Emit once per percent, not once per network chunk (thousands per second).
+                        if (pct === downloadProgress) return
+                        downloadProgress = pct
                         onProgress({
                             modelId,
                             percent: downloadProgress,

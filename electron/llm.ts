@@ -2,6 +2,7 @@ import path from 'path'
 import fs from 'fs'
 import https from 'https'
 import http from 'http'
+import crypto from 'crypto'
 import { app } from 'electron'
 import { detectHardware, HardwareProfile } from './hardware'
 import { isFaithfulCleanup } from './fidelity'
@@ -333,15 +334,80 @@ export function getLlmStatus(): {
     }
 }
 
+export interface DownloadProgress {
+    modelId: string
+    percent: number
+    loadedBytes: number
+    totalBytes: number
+    /** 'verifying' while the finished file's checksum is being checked. */
+    phase?: 'downloading' | 'verifying'
+}
+
+interface DownloadState {
+    req: http.ClientRequest | null
+    cancelled: boolean
+}
+
+let activeDownload: DownloadState | null = null
+
+/** Stops the running download. The partial file is kept so a later attempt resumes where it left off. */
+export function cancelDownload(): boolean {
+    if (!activeDownload) return false
+    activeDownload.cancelled = true
+    try { activeDownload.req?.destroy() } catch { }
+    return true
+}
+
+/** GET that follows redirects, remembering the SHA-256 Hugging Face advertises for LFS files. */
+function getFollowingRedirects(
+    url: string,
+    headers: Record<string, string>,
+    state: DownloadState,
+    seen: { sha256?: string } = {},
+    redirects = 0
+): Promise<{ res: http.IncomingMessage; sha256?: string }> {
+    return new Promise((resolve, reject) => {
+        if (state.cancelled) return reject(new Error('Download cancelled'))
+        if (redirects > 8) return reject(new Error('Too many redirects'))
+
+        const mod = url.startsWith('https') ? https : http
+        const req = mod.get(url, { headers }, (res) => {
+            const etag = String(res.headers['x-linked-etag'] || '').replace(/"/g, '')
+            if (/^[0-9a-f]{64}$/i.test(etag)) seen.sha256 = etag.toLowerCase()
+
+            if (res.statusCode && [301, 302, 303, 307, 308].includes(res.statusCode) && res.headers.location) {
+                res.resume()
+                const next = new URL(res.headers.location, url).toString()
+                getFollowingRedirects(next, headers, state, seen, redirects + 1).then(resolve, reject)
+                return
+            }
+            resolve({ res, sha256: seen.sha256 })
+        })
+        state.req = req
+        req.on('error', (err) => reject(state.cancelled ? new Error('Download cancelled') : err))
+    })
+}
+
+function sha256File(filePath: string): Promise<string> {
+    return new Promise((resolve, reject) => {
+        const hash = crypto.createHash('sha256')
+        const stream = fs.createReadStream(filePath)
+        stream.on('data', (chunk) => hash.update(chunk))
+        stream.on('error', reject)
+        stream.on('end', () => resolve(hash.digest('hex')))
+    })
+}
+
 export async function downloadModel(
     modelId: string,
-    onProgress: (progress: { modelId: string; percent: number; loadedBytes: number; totalBytes: number }) => void
+    onProgress: (progress: DownloadProgress) => void
 ): Promise<void> {
     const meta = OPEN_MODELS.find(m => m.id === modelId)
     if (!meta) throw new Error(`Unknown model ID: ${modelId}`)
 
     const modelPath = getModelPath(meta.filename)
     if (isModelDownloaded(modelId)) return
+    if (activeDownload) throw new Error('Another download is already in progress')
 
     // Downloading a second model must not knock an already-loaded model out of 'ready'.
     const wasReady = status === 'ready'
@@ -352,95 +418,93 @@ export async function downloadModel(
     downloadTotalBytes = meta.approxBytes
     errorMessage = ''
 
-    return new Promise((resolve, reject) => {
-        const tempPath = modelPath + '.part'
+    const state: DownloadState = { req: null, cancelled: false }
+    activeDownload = state
+    const tempPath = modelPath + '.part'
 
-        const follow = (url: string, redirects = 0) => {
-            if (redirects > 8) {
-                if (!wasReady) status = 'error'
-                activeDownloadModelId = null
-                errorMessage = 'Too many redirects'
-                return reject(new Error('Too many redirects'))
-            }
+    try {
+        // Resume from a previous partial download when there is one.
+        let existing = fs.existsSync(tempPath) ? fs.statSync(tempPath).size : 0
+        let { res, sha256 } = await getFollowingRedirects(meta.url, existing > 0 ? { Range: `bytes=${existing}-` } : {}, state)
 
-            const mod = url.startsWith('https') ? https : http
-            mod.get(url, (res) => {
-                if (res.statusCode === 301 || res.statusCode === 302 || res.statusCode === 307 || res.statusCode === 308) {
-                    return follow(res.headers.location!, redirects + 1)
-                }
-                if (res.statusCode !== 200) {
-                    if (!wasReady) status = 'error'
-                    activeDownloadModelId = null
-                    errorMessage = `HTTP ${res.statusCode}`
-                    return reject(new Error(`HTTP ${res.statusCode}`))
-                }
-
-                const totalBytes = parseInt(res.headers['content-length'] || '0', 10) || meta.approxBytes
-                downloadTotalBytes = totalBytes
-                let receivedBytes = 0
-                const fileStream = fs.createWriteStream(tempPath)
-
-                res.on('data', (chunk: Buffer) => {
-                    receivedBytes += chunk.length
-                    downloadLoadedBytes = receivedBytes
-                    fileStream.write(chunk)
-                    if (totalBytes > 0) {
-                        const pct = Math.min(100, Math.round((receivedBytes / totalBytes) * 100))
-                        // Emit once per percent, not once per network chunk (thousands per second).
-                        if (pct === downloadProgress) return
-                        downloadProgress = pct
-                        onProgress({
-                            modelId,
-                            percent: downloadProgress,
-                            loadedBytes: receivedBytes,
-                            totalBytes
-                        })
-                    }
-                })
-
-                res.on('end', () => {
-                    fileStream.end(() => {
-                        try {
-                            if (fs.existsSync(modelPath)) fs.unlinkSync(modelPath)
-                            fs.renameSync(tempPath, modelPath)
-                            status = wasReady ? 'ready' : 'not-downloaded'
-                            activeDownloadModelId = null
-                            downloadProgress = 100
-                            downloadLoadedBytes = totalBytes
-                            onProgress({
-                                modelId,
-                                percent: 100,
-                                loadedBytes: totalBytes,
-                                totalBytes
-                            })
-                            resolve()
-                        } catch (err: any) {
-                            if (!wasReady) status = 'error'
-                            activeDownloadModelId = null
-                            errorMessage = 'Failed to save model file'
-                            reject(err)
-                        }
-                    })
-                })
-
-                res.on('error', (err) => {
-                    fileStream.close()
-                    try { fs.unlinkSync(tempPath) } catch { }
-                    if (!wasReady) status = 'error'
-                    activeDownloadModelId = null
-                    errorMessage = err.message
-                    reject(err)
-                })
-            }).on('error', (err) => {
-                if (!wasReady) status = 'error'
-                activeDownloadModelId = null
-                errorMessage = err.message
-                reject(err)
-            })
+        if (res.statusCode === 416) {
+            // The partial file is not usable (already complete or corrupt): start over.
+            res.resume()
+            try { fs.unlinkSync(tempPath) } catch { }
+            existing = 0
+            ;({ res, sha256 } = await getFollowingRedirects(meta.url, {}, state))
         }
 
-        follow(meta.url)
-    })
+        let append = false
+        if (res.statusCode === 206 && existing > 0) {
+            append = true
+        } else if (res.statusCode === 200) {
+            existing = 0 // the server ignored the range request: rewrite from scratch
+        } else {
+            res.resume()
+            throw new Error(`HTTP ${res.statusCode}`)
+        }
+
+        const remaining = parseInt(res.headers['content-length'] || '0', 10)
+        const totalBytes = remaining > 0 ? existing + remaining : meta.approxBytes
+        downloadTotalBytes = totalBytes
+        let received = existing
+        downloadLoadedBytes = received
+
+        await new Promise<void>((resolve, reject) => {
+            const fileStream = fs.createWriteStream(tempPath, { flags: append ? 'a' : 'w' })
+
+            res.on('data', (chunk: Buffer) => {
+                received += chunk.length
+                downloadLoadedBytes = received
+                const pct = Math.min(100, Math.round((received / totalBytes) * 100))
+                // Emit once per percent, not once per network chunk.
+                if (pct !== downloadProgress) {
+                    downloadProgress = pct
+                    onProgress({ modelId, percent: pct, loadedBytes: received, totalBytes, phase: 'downloading' })
+                }
+            })
+            res.on('error', (err) => reject(state.cancelled ? new Error('Download cancelled') : err))
+            // The connection closing before the response completed means cancel or a dropped link.
+            res.on('close', () => {
+                if (!res.complete) {
+                    fileStream.destroy()
+                    reject(new Error(state.cancelled ? 'Download cancelled' : 'Connection lost during download (it will resume next time)'))
+                }
+            })
+            fileStream.on('error', reject)
+            fileStream.on('finish', () => resolve())
+            // pipe() applies backpressure, so a slow disk cannot balloon memory.
+            res.pipe(fileStream)
+        })
+
+        // Check integrity against the checksum Hugging Face publishes for the file.
+        if (sha256) {
+            onProgress({ modelId, percent: 100, loadedBytes: received, totalBytes, phase: 'verifying' })
+            const actual = await sha256File(tempPath)
+            if (actual !== sha256) {
+                try { fs.unlinkSync(tempPath) } catch { }
+                throw new Error('Downloaded file failed its checksum. It was discarded; please try again.')
+            }
+        }
+
+        if (fs.existsSync(modelPath)) fs.unlinkSync(modelPath)
+        fs.renameSync(tempPath, modelPath)
+
+        status = wasReady ? 'ready' : 'not-downloaded'
+        downloadProgress = 100
+        downloadLoadedBytes = received
+        onProgress({ modelId, percent: 100, loadedBytes: received, totalBytes, phase: 'downloading' })
+    } catch (err: any) {
+        const cancelled = state.cancelled
+        if (!wasReady) status = cancelled ? 'not-downloaded' : 'error'
+        errorMessage = cancelled ? '' : (err?.message || String(err))
+        downloadProgress = 0
+        throw err
+    } finally {
+        activeDownload = null
+        activeDownloadModelId = null
+    }
 }
 
 export function deleteModel(modelId: string): boolean {

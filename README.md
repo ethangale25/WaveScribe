@@ -6,7 +6,7 @@ on your machine; no audio leaves it.
 
 ## Features
 
-- **Global hotkey** (default `Ctrl+Shift+Space`) works in any app
+- **Global hotkey** (default `Ctrl+Shift+Space`) works in any app; optional **push-to-talk** (hold to dictate)
 - **Streaming transcription**: speech is decoded phrase by phrase while you talk, so text appears
   almost immediately after you stop
 - **Live preview** of the decoded text in the status line / island while recording
@@ -42,10 +42,13 @@ npm run build      # vite build + electron-builder (NSIS installer in release/)
 4. Filler removal, dictionary, capitalization and (optionally) the local LLM run, then the text is
    pasted with a native `SendInput` call (`electron/win32.ts`).
 
-## Measuring changes
+## Tests and measuring changes
+
+`npm test` runs the unit tests (stitcher, AI-cleanup fidelity gate, segmenter, post-processing).
 
 `tools/eval` runs synthetic speech through the real pipeline and reports stop-to-text latency and
-word error rate against decoding the whole clip in one pass. See `tools/eval/README.md`.
+word error rate against decoding the whole clip in one pass, and can drive the whole app (fake
+microphone, real key presses, throw-away profile). See `tools/eval/README.md`.
 
 ## Project notes
 

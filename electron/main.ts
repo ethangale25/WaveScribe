@@ -18,7 +18,8 @@ import {
     abortChat,
     isModelDownloaded,
     OPEN_MODELS,
-    setPreferredModel
+    setPreferredModel,
+    cancelDownload
 } from './llm'
 import { captureContext } from './context-capture'
 import { sendCtrlV, getCursorPosition, isKeyDown } from './win32'
@@ -685,6 +686,10 @@ ipcMain.handle('llm-download-model', async (_event, modelId: string) => {
     } catch (err: any) {
         return { success: false, error: err.message || String(err) };
     }
+});
+
+ipcMain.handle('llm-cancel-download', () => {
+    return { success: cancelDownload() };
 });
 
 ipcMain.handle('llm-delete-model', (_event, modelId: string) => {

@@ -28,6 +28,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     llmStatus: () => ipcRenderer.invoke('llm-status'),
     llmGetCatalog: () => ipcRenderer.invoke('llm-get-catalog'),
     llmDownloadModel: (modelId: string) => ipcRenderer.invoke('llm-download-model', modelId),
+    llmCancelDownload: () => ipcRenderer.invoke('llm-cancel-download'),
     llmDeleteModel: (modelId: string) => ipcRenderer.invoke('llm-delete-model', modelId),
     llmLoadModel: (modelId: string) => ipcRenderer.invoke('llm-load-model', modelId),
     llmReformat: (text: string, context?: string) => ipcRenderer.invoke('llm-reformat', text, context),

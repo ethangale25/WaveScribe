@@ -32,11 +32,20 @@ whisper-tiny CPU 1308 / WebGPU 959 ms · whisper-base CPU 2729 / WebGPU 1368 ms 
 - Phase 0: git, `.gitignore`, stale Python-era files removed, README rewritten, timing logs, unit tests (`npm test`), evaluation tools in `tools/eval`
 - New profiles default to Moonshine Base on CPU. **Existing profiles keep their settings** (yours is whisper-tiny on WebGPU; switching to Moonshine Base with GPU off is the largest remaining speed-up)
 
+**Done in the second pass**
+- AI cleanup runs phrase by phrase in the background while you talk (only the last phrase is cleaned at stop): Moonshine Base + AI 1.1-1.3 s -> 0.8-1.0 s, Moonshine Tiny + AI 0.93-1.13 s -> 0.6-0.77 s
+- Push-to-talk (hold the hotkey; release to finish) · hotkey presses during processing are queued, not dropped · notice when the hotkey cannot be registered · clipboard restored with text, HTML, RTF and images
+- Model downloads: resume from the partial file, Cancel button, backpressure, SHA-256 verification against Hugging Face's published checksum, visible error messages (verified against the real server: cancel -> resume from 69 MB -> checksum pass)
+- Text post-processing and model tables extracted from `src/main.ts` into `src/postprocess.ts` and `src/models.ts`, with tests
+
+**Packaged build** (installer 138 MB): click mode 0.82-0.84 s, push-to-talk 0.95 s (Moonshine Base + AI cleanup, 14 s clip).
+
 **Not done yet**
-- Tentative decoding of the open phrase while speaking, seam re-decode, rolling LLM polish (the AI cleanup step is now >50% of total time in the Moonshine setup), optional "accurate final" pass
+- Decoding the open phrase while speaking (tentative text), seam re-decode, optional "accurate final" pass
 - WASM threads (needs cross-origin isolation via a custom protocol) · onnxruntime-node/DirectML
-- Push-to-talk, queueing hotkey presses during processing, rich-clipboard restore, download resume/cancel/checksum, hotkey-registration warning, splitting `src/main.ts` (still ~2,700 lines)
-- One unexplained intermittent: a single 3-round driver run showed a round that never pasted (right after a heavy `npm ci`); two later runs of 3 rounds were clean
+- Fully splitting `src/main.ts` (still ~2,750 lines, mostly UI templates and closures over shared state)
+- Your own profile still uses whisper-tiny on WebGPU; switching to Moonshine Base with GPU off is the biggest remaining speed-up
+- One unexplained intermittent: a single 3-round driver run showed a round that never pasted (right after a heavy `npm ci`); many later runs were clean
 
 ---
 

@@ -8,3 +8,4 @@ tools/eval/run.mjs
 tools/eval/data/
 venv/
 .test-build/
+tools/eval/download-test.mjs

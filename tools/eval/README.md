@@ -11,3 +11,15 @@ node tools/eval/run.mjs Xenova/whisper-base.en tools/eval/data/clip.wav "your se
 
 Numbers are CPU/Node (onnxruntime-node); the app runs the same code on WASM/WebGPU in the renderer,
 so absolute times differ but the single-pass vs streaming gap is what matters.
+
+## Driving the whole app
+
+```
+node tools/eval/drive-app.mjs <clip.wav> <clip-seconds> [--model=ID] [--device=cpu|webgpu] [--ai=1] [--repeat=N] [--ptt] [--queue-test] [--exe=path]
+```
+
+Launches the app with a fake microphone playing the clip, in a throw-away profile (your real settings,
+history and stats are never touched) and with `WAVESCRIBE_NO_PASTE=1` (nothing is pasted). `--ptt` holds
+the real global hotkey; `--queue-test` presses it while a dictation is still processing; `--exe` runs a
+packaged build. Other tools: `llm-bench.mjs` / `llm-prompts.mjs` (AI cleanup speed and fidelity),
+`download-test.ts` (cancel, resume and checksum against Hugging Face).

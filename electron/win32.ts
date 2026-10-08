@@ -12,6 +12,7 @@ const VK_V = 0x56
 interface Win32Api {
     sendInput: (inputs: any[], size: number) => number
     getCursorPos: (out: { x: number; y: number }) => boolean
+    getAsyncKeyState: (vk: number) => number
     inputSize: number
 }
 
@@ -45,11 +46,13 @@ function load(): Win32Api | null {
 
         const SendInput = user32.func('uint32 SendInput(uint32 cInputs, INPUT *pInputs, int cbSize)')
         const GetCursorPos = user32.func('bool GetCursorPos(_Out_ POINT *lpPoint)')
+        const GetAsyncKeyState = user32.func('int16 GetAsyncKeyState(int vKey)')
 
         api = {
             inputSize: koffi.sizeof(INPUT),
             sendInput: (inputs, size) => SendInput(inputs.length, inputs, size),
             getCursorPos: (out) => GetCursorPos(out),
+            getAsyncKeyState: (vk) => GetAsyncKeyState(vk),
         }
     } catch (err) {
         console.warn('[win32] Native bindings unavailable, falling back to PowerShell:', err)
@@ -82,6 +85,21 @@ export function getCursorPosition(): { x: number; y: number } | null {
     try {
         const pt = { x: 0, y: 0 }
         return w.getCursorPos(pt) ? pt : null
+    } catch {
+        return null
+    }
+}
+
+/**
+ * Whether a key is physically held down right now. Returns null if the native layer is unavailable
+ * (callers should then fall back to toggle behaviour).
+ */
+export function isKeyDown(virtualKey: number): boolean | null {
+    const w = load()
+    if (!w) return null
+    try {
+        // The high bit of the result is set while the key is down.
+        return (w.getAsyncKeyState(virtualKey) & 0x8000) !== 0
     } catch {
         return null
     }

@@ -5,9 +5,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
     getSettings: () => ipcRenderer.invoke('get-settings'),
     setSetting: (key: string, value: any) => ipcRenderer.invoke('set-setting', key, value),
     checkHotkey: (hotkey: string) => ipcRenderer.invoke('check-hotkey', hotkey),
-    onDictationHotkey: (callback: () => void) => {
-        ipcRenderer.on('dictation-hotkey', callback);
-        return () => { ipcRenderer.removeListener('dictation-hotkey', callback); }
+    onDictationHotkey: (callback: (action: 'toggle' | 'start' | 'stop') => void) => {
+        const handler = (_: any, action?: 'toggle' | 'start' | 'stop') => callback(action ?? 'toggle');
+        ipcRenderer.on('dictation-hotkey', handler);
+        return () => { ipcRenderer.removeListener('dictation-hotkey', handler); }
     },
     windowControl: (action: string) => ipcRenderer.invoke('window-control', action),
     copyText: (text: string) => ipcRenderer.invoke('copy-text', text),

@@ -21,7 +21,8 @@ import {
     setPreferredModel
 } from './llm'
 import { captureContext } from './context-capture'
-import { sendCtrlV, getCursorPosition } from './win32'
+import { sendCtrlV, getCursorPosition, isKeyDown } from './win32'
+import { mainKeyVirtualCode } from './hotkey'
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
@@ -111,6 +112,53 @@ function createTray(icon: Electron.NativeImage) {
     }
 }
 
+// --- Global hotkey: toggle mode, or push-to-talk (hold to dictate) ---
+
+let activeHotkey = ''
+let holdActive = false
+let holdTimer: ReturnType<typeof setInterval> | null = null
+
+function sendDictationAction(action: 'toggle' | 'start' | 'stop') {
+    console.log(`[Hotkey] ${action} @ ${Date.now()}`)
+    mainWindow?.webContents.send('dictation-hotkey', action)
+}
+
+function onHotkeyPressed() {
+    const pushToTalk = store.get('pushToTalk', false) as boolean
+    const vk = pushToTalk ? mainKeyVirtualCode(activeHotkey) : null
+
+    // Push-to-talk needs a key we can poll for release; anything else behaves as a toggle.
+    if (!pushToTalk || vk === null || isKeyDown(vk) === null) {
+        sendDictationAction('toggle')
+        return
+    }
+
+    // Holding the keys makes the OS repeat the hotkey; only the first press starts recording.
+    if (holdActive) return
+    holdActive = true
+    sendDictationAction('start')
+    holdTimer = setInterval(() => {
+        if (isKeyDown(vk) === false) {
+            if (holdTimer) clearInterval(holdTimer)
+            holdTimer = null
+            holdActive = false
+            sendDictationAction('stop')
+        }
+    }, 25)
+}
+
+/** Registers the dictation hotkey. Returns false if the OS refused it (e.g. another app owns it). */
+function registerDictationHotkey(accelerator: string): boolean {
+    try {
+        const ok = globalShortcut.register(accelerator, onHotkeyPressed)
+        if (ok) activeHotkey = accelerator
+        return ok
+    } catch (e) {
+        console.warn('Failed to register hotkey:', accelerator, e)
+        return false
+    }
+}
+
 function createWindow() {
     const iconPath = getAppIconPath();
     const appIcon = getAppIcon();
@@ -171,12 +219,14 @@ function createWindow() {
 
     // Global hotkey
     const hotkey = store.get('hotkey', 'CommandOrControl+Shift+Space') as string
-    try {
-        globalShortcut.register(hotkey, () => {
-            mainWindow?.webContents.send('dictation-hotkey')
-        })
-    } catch (e) {
-        console.warn('Failed to register initial hotkey:', e)
+    if (!registerDictationHotkey(hotkey)) {
+        // Without this the app would say "Ready" while the hotkey silently did nothing.
+        try {
+            new Notification({
+                title: 'WaveScribe hotkey unavailable',
+                body: `Could not register "${hotkey}". Another app may be using it. Choose a different shortcut in Settings.`
+            }).show()
+        } catch (_) { }
     }
 
     // Create the spinner overlay window (hidden until needed)
@@ -244,6 +294,7 @@ app.on('window-all-closed', function () {
 })
 
 app.on('will-quit', () => {
+    if (holdTimer) clearInterval(holdTimer)
     globalShortcut.unregisterAll()
 })
 
@@ -294,7 +345,13 @@ ipcMain.handle('insert-text', async (event, text: string) => {
         return { success: true };
     }
     try {
-        const previousClipboard = clipboard.readText();
+        // Remember everything on the clipboard (not just text) so images and rich text survive.
+        const previous = {
+            text: clipboard.readText(),
+            html: clipboard.readHTML(),
+            rtf: clipboard.readRTF(),
+            image: clipboard.readImage(),
+        };
         clipboard.writeText(text);
 
         // Native SendInput takes ~1ms; PowerShell (cold start + C# compile) takes hundreds.
@@ -303,7 +360,17 @@ ipcMain.handle('insert-text', async (event, text: string) => {
         // Restore the original clipboard only if it still holds what we pasted.
         setTimeout(() => {
             if (clipboard.readText() === text) {
-                clipboard.writeText(previousClipboard);
+                const hasContent = previous.text || previous.html || previous.rtf || !previous.image.isEmpty();
+                if (!hasContent) {
+                    clipboard.clear();
+                } else {
+                    clipboard.write({
+                        text: previous.text || undefined,
+                        html: previous.html || undefined,
+                        rtf: previous.rtf || undefined,
+                        image: previous.image.isEmpty() ? undefined : previous.image,
+                    });
+                }
             }
         }, 350);
 
@@ -322,20 +389,14 @@ ipcMain.handle('get-settings', () => {
 ipcMain.handle('set-setting', (event, key, value) => {
     // Dynamically update hotkey tracking with safe rollback
     if (key === 'hotkey') {
-        const currentHotkey = store.get('hotkey', 'CommandOrControl+Shift+Space') as string;
+        const previousHotkey = activeHotkey || (store.get('hotkey', 'CommandOrControl+Shift+Space') as string);
+        if (holdTimer) { clearInterval(holdTimer); holdTimer = null; holdActive = false; }
         globalShortcut.unregisterAll();
-        const success = globalShortcut.register(value, () => {
-            mainWindow?.webContents.send('dictation-hotkey');
-        });
 
-        if (!success) {
-            // Roll back to previous hotkey so user is not locked out
-            console.warn(`[Hotkey] Failed to register "${value}". Reverting to "${currentHotkey}".`);
-            try {
-                globalShortcut.register(currentHotkey, () => {
-                    mainWindow?.webContents.send('dictation-hotkey');
-                });
-            } catch (_) { }
+        if (!registerDictationHotkey(value)) {
+            // Roll back to the previous hotkey so the user is not locked out
+            console.warn(`[Hotkey] Failed to register "${value}". Reverting to "${previousHotkey}".`);
+            registerDictationHotkey(previousHotkey);
             return { success: false };
         }
 

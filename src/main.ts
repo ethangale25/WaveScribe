@@ -35,7 +35,7 @@ declare global {
       getSettings: () => Promise<any>
       setSetting: (key: string, value: any) => Promise<any>
       checkHotkey: (hotkey: string) => Promise<{ registered: boolean }>
-      onDictationHotkey: (callback: () => void) => () => void
+      onDictationHotkey: (callback: (action: 'toggle' | 'start' | 'stop') => void) => () => void
       windowControl: (action: 'minimize' | 'maximize' | 'close') => void
       copyText: (text: string) => Promise<{ success: boolean }>
       toggleMiniMode: (isMini: boolean) => Promise<{ success: boolean }>
@@ -330,6 +330,13 @@ if (appElement) {
                 <option value="CommandOrControl+Shift+D">Ctrl/Cmd + Shift + D</option>
                 <option value="custom">Custom...</option>
               </select>
+            </div>
+            <div class="form-group switch-group" style="margin-top: 12px;">
+              <label>Push-to-talk (hold the shortcut, release to finish)</label>
+              <label class="switch">
+                <input type="checkbox" id="setting-push-to-talk">
+                <span class="slider round"></span>
+              </label>
             </div>
             <div class="form-group" id="custom-hotkey-group" style="display: none; border-top: 1px solid var(--border-color); padding-top: 12px; margin-top: 12px;">
               <label>Custom Shortcut</label>
@@ -880,6 +887,7 @@ if (appElement) {
   };
 
   let activeStreamingSession: StreamingTranscriptionSession | null = null;
+  let runPendingAction: () => void = () => { };
   // True when the AI cleanup runs phrase by phrase during recording (so it is skipped at stop).
   let sessionPolishesWithLlm = false;
 
@@ -1114,6 +1122,7 @@ if (appElement) {
         if (window.electronAPI) {
           window.electronAPI.hideCursorSpinner().catch(() => { });
         }
+        runPendingAction();
       }
     } else {
       // Without a loaded model every phrase would fail; the status line already shows why.
@@ -1231,8 +1240,30 @@ if (appElement) {
         if (islandText) islandText.textContent = 'Error';
       } finally {
         isProcessing = false;
+        runPendingAction();
       }
     }
+  };
+
+  // A hotkey press that arrives while a dictation is starting or being processed used to be
+  // dropped. Remember the latest one and run it as soon as the app is free.
+  let pendingAction: 'toggle' | 'start' | 'stop' | null = null;
+
+  const handleHotkeyAction = (action: 'toggle' | 'start' | 'stop') => {
+    if (isProcessing) {
+      pendingAction = action;
+      return;
+    }
+    // Push-to-talk sends explicit start/stop; ignore ones that no longer make sense.
+    if (action === 'start' && isRecording) return;
+    if (action === 'stop' && !isRecording) return;
+    toggleRecording();
+  };
+
+  runPendingAction = () => {
+    const next = pendingAction;
+    pendingAction = null;
+    if (next) setTimeout(() => handleHotkeyAction(next), 0);
   };
 
   recordBtn?.addEventListener('click', toggleRecording);
@@ -1256,6 +1287,7 @@ if (appElement) {
   const inputPunct = document.getElementById('setting-punctuate') as HTMLInputElement;
   const inputSounds = document.getElementById('setting-sounds') as HTMLInputElement;
   const inputNotify = document.getElementById('setting-notifications') as HTMLInputElement;
+  const inputPushToTalk = document.getElementById('setting-push-to-talk') as HTMLInputElement;
 
   // Performance Input Elements
   const inputComputeDevice = document.getElementById('setting-compute-device') as HTMLInputElement;
@@ -1592,6 +1624,7 @@ if (appElement) {
         if (settings.autoPunct !== undefined) inputPunct.checked = settings.autoPunct;
         if (settings.playSounds !== undefined) inputSounds.checked = settings.playSounds;
         if (settings.showNotify !== undefined) inputNotify.checked = settings.showNotify;
+        if (settings.pushToTalk !== undefined) inputPushToTalk.checked = settings.pushToTalk;
         if (settings.dictionaryPairs && Array.isArray(settings.dictionaryPairs)) {
           dictionaryPairs = settings.dictionaryPairs;
           renderDictionary();
@@ -1745,6 +1778,7 @@ if (appElement) {
       await window.electronAPI.setSetting('playSounds', inputSounds.checked);
       playSoundsEnabled = inputSounds.checked;
       await window.electronAPI.setSetting('showNotify', inputNotify.checked);
+      await window.electronAPI.setSetting('pushToTalk', inputPushToTalk.checked);
       showNotifyEnabled = inputNotify.checked;
       await window.electronAPI.setSetting('dictionaryPairs', dictionaryPairs);
 
@@ -1773,8 +1807,8 @@ if (appElement) {
   });
 
   if (window.electronAPI) {
-    window.electronAPI.onDictationHotkey(() => {
-      toggleRecording();
+    window.electronAPI.onDictationHotkey((action) => {
+      handleHotkeyAction(action);
     });
 
     window.electronAPI.onWindowMaximized((isMax: boolean) => {

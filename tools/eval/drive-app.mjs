@@ -30,11 +30,12 @@ if (!clip || !secondsArg) {
 }
 const modelFlag = flag('model');
 const repeat = parseInt(flag('repeat') || '1', 10);
+const ptt = process.argv.includes('--ptt'); // hold Ctrl+Shift+Space with real key events instead of clicking
 const deviceFlag = flag('device') || 'cpu';
 const tempProfile = fs.mkdtempSync(path.join(os.tmpdir(), 'wavescribe-eval-'));
 if (modelFlag) {
     fs.writeFileSync(path.join(tempProfile, 'config.json'), JSON.stringify({
-        model: modelFlag, computeDevice: deviceFlag, aiReformat: flag('ai') === '1', vadEnabled: true, playSounds: false, showNotify: false,
+        model: modelFlag, computeDevice: deviceFlag, aiReformat: flag('ai') === '1', vadEnabled: true, playSounds: false, showNotify: false, pushToTalk: ptt,
     }));
     if (flag('ai') === '1') {
         // --ai=1 also links the real LLM models folder so the cleanup step runs.
@@ -48,6 +49,7 @@ if (modelFlag) {
     delete config.metrics;
     config.playSounds = false;
     config.showNotify = false;
+    if (ptt) config.pushToTalk = true;
     fs.writeFileSync(path.join(tempProfile, 'config.json'), JSON.stringify(config));
     if (fs.existsSync(path.join(realProfile, 'models'))) {
         fs.symlinkSync(path.join(realProfile, 'models'), path.join(tempProfile, 'models'), 'junction');
@@ -55,6 +57,20 @@ if (modelFlag) {
 }
 const appDir = path.resolve(flag('app-dir') || '.'); // run a different checkout, e.g. the original code
 const clipSeconds = parseFloat(secondsArg);
+
+// Real keyboard input via SendInput (same path a physical keyboard takes).
+function makeKeyboard() {
+    const koffi = require('koffi');
+    const user32 = koffi.load('user32.dll');
+    const KB = koffi.struct('KEYBDINPUT', { wVk: 'uint16', wScan: 'uint16', dwFlags: 'uint32', time: 'uint32', dwExtraInfo: 'uintptr_t' });
+    const MI = koffi.struct('MOUSEINPUT', { dx: 'int32', dy: 'int32', mouseData: 'uint32', dwFlags: 'uint32', time: 'uint32', dwExtraInfo: 'uintptr_t' });
+    const INPUT = koffi.struct('INPUT', { type: 'uint32', u: koffi.union('INPUT_U', { ki: KB, mi: MI }) });
+    const SendInput = user32.func('uint32 SendInput(uint32 c, INPUT *p, int cb)');
+    return (vk, up) => SendInput(1, [{ type: 1, u: { ki: { wVk: vk, wScan: 0, dwFlags: up ? 2 : 0, time: 0, dwExtraInfo: 0 } } }], koffi.sizeof(INPUT));
+}
+const queueTest = process.argv.includes('--queue-test'); // press the hotkey while the last dictation is still processing
+const key = (ptt || queueTest) ? makeKeyboard() : null;
+const VK = { ctrl: 0x11, shift: 0x10, space: 0x20 };
 const PORT = 9333;
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
@@ -127,7 +143,8 @@ for (let round = 1; round <= repeat; round++) {
     logs.length = 0;
     if (repeat > 1) console.log(`
 ===== round ${round} of ${repeat} =====`);
-    await evaluate(`document.getElementById('record-btn').click()`);
+    if (ptt) { key(VK.ctrl, false); key(VK.shift, false); key(VK.space, false); }
+    else await evaluate(`document.getElementById('record-btn').click()`);
 
     // Wait until recording has actually started, then talk for the clip length.
     for (let i = 0; i < 40; i++) {
@@ -138,14 +155,34 @@ for (let round = 1; round <= repeat; round++) {
     await sleep(Math.max(0, clipSeconds * 1000 - 300)); // stop right after the last word
 
     const tStop = Date.now();
-    await evaluate(`document.getElementById('record-btn').click()`);
+    if (ptt) { key(VK.space, true); key(VK.shift, true); key(VK.ctrl, true); }
+    else await evaluate(`document.getElementById('record-btn').click()`);
     console.log('stop clicked');
+    if (queueTest) {
+        await sleep(250); // the dictation is now being processed
+        key(VK.ctrl, false); key(VK.shift, false); key(VK.space, false);
+        key(VK.space, true); key(VK.shift, true); key(VK.ctrl, true);
+        console.log('hotkey pressed while processing');
+    }
 
     for (let i = 0; i < 120; i++) {
         if (logs.some(l => l.includes('[PasteDone]'))) break;
         await sleep(250);
     }
     await sleep(500);
+    logs.filter(l => l.includes('[Hotkey]') || l.includes('[PasteDone]')).forEach(l => console.log('  ' + l));
+    console.log('  (stop requested at ' + tStop + ')');
+    if (queueTest) {
+        let started = false;
+        for (let i = 0; i < 40 && !started; i++) {
+            started = (await evaluate(`document.getElementById('status-message')?.textContent`)) === 'Recording...' ||
+                      (await evaluate(`document.getElementById('record-btn')?.classList.contains('recording')`)) === true;
+            if (!started) await sleep(250);
+        }
+        console.log('QUEUED PRESS STARTED A NEW RECORDING: ' + started);
+        if (started) await evaluate(`document.getElementById('record-btn').click()`); // stop it again
+        await sleep(3000);
+    }
     const pasteLine = logs.find(l => l.includes('[PasteDone]'));
     console.log('STOP->PASTE: ' + (pasteLine ? (Number(pasteLine.split('[PasteDone] ')[1]) - tStop) + 'ms' : 'never pasted'));
     if (!pasteLine) {

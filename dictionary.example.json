@@ -1,0 +1,14 @@
+{
+  "explanation": "Add words here that Whisper might mishear. Format: 'what_whisper_hears': 'correct_spelling'",
+  "examples": {
+    "john doe": "John Doe",
+    "acme": "ACME Corp",
+    "kubernetes": "Kubernetes",
+    "api": "API",
+    "url": "URL",
+    "github": "GitHub",
+    "javascript": "JavaScript",
+    "typescript": "TypeScript",
+    "postgres": "PostgreSQL"
+  }
+}

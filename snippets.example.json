@@ -1,0 +1,14 @@
+{
+  "explanation": "Say the trigger phrase, and it will be replaced with the full text. Great for emails, links, and common phrases.",
+  "examples": {
+    "my email": "yourname@example.com",
+    "my phone": "+1 (555) 123-4567",
+    "my address": "123 Main Street, City, State 12345",
+    "calendar link": "https://calendly.com/yourname/30min",
+    "zoom link": "https://zoom.us/j/1234567890",
+    "thanks reply": "Thank you for reaching out! I'll review this and get back to you within 24 hours.",
+    "meeting followup": "Hi! Great meeting today. Here are the key action items we discussed:",
+    "out of office": "I'm currently out of the office and will respond to your message when I return.",
+    "signature": "Best regards,\nYour Name\nYour Title | Company Name\nyourname@example.com"
+  }
+}

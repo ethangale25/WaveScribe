@@ -8,6 +8,17 @@ import type { PhraseMeta } from './segmenter';
 env.allowLocalModels = false;
 env.useBrowserCache = true;
 
+// transformers.js points ONNX Runtime at a CDN by default, which breaks the first launch when
+// offline even though the WASM is already bundled with the app. Clearing the override makes ONNX
+// Runtime resolve its WASM relative to the app's own bundle.
+try {
+    if (env.backends?.onnx?.wasm) {
+        (env.backends.onnx.wasm as any).wasmPaths = undefined;
+    }
+} catch (err) {
+    console.warn('[Transcribe] Could not reset ONNX wasmPaths:', err);
+}
+
 let transcriber: any = null;
 let currentModelName = 'Xenova/whisper-tiny.en';
 let currentDevice: 'cpu' | 'webgpu' = 'cpu';

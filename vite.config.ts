@@ -9,7 +9,7 @@ export default defineConfig({
         vite: {
           build: {
             rollupOptions: {
-              external: ['node-llama-cpp']
+              external: ['node-llama-cpp', 'koffi']
             }
           }
         }

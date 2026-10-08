@@ -24,6 +24,11 @@ const MAX_PHRASE_SAMPLES = 16000 * 6.5; // Max 6.5s per chunk to prevent buffer 
 let consecutiveSilenceSamples = 0;
 let phraseHasSpeech = false;
 
+// Speech span within the full recording (in samples), so the speech duration is known without
+// merging and VAD-trimming the whole recording again at stop time.
+let firstSpeechSample = -1;
+let lastSpeechEndSample = 0;
+
 export function setAudioDevice(deviceId: string | null) {
     activeDeviceId = deviceId;
 }
@@ -121,6 +126,8 @@ export async function startRecording(options?: StartRecordingOptions): Promise<v
     totalPhraseSamples = 0;
     consecutiveSilenceSamples = 0;
     phraseHasSpeech = false;
+    firstSpeechSample = -1;
+    lastSpeechEndSample = 0;
 
     isStreamingActive = options?.enableStreaming ?? true;
     onPhraseCallback = options?.onPhraseCompleted ?? null;
@@ -154,6 +161,7 @@ export async function startRecording(options?: StartRecordingOptions): Promise<v
         if (pcm16k.length === 0) return;
 
         // Save to full recording history
+        const frameStartSample = totalFullSamples;
         fullRecordingChunks.push(pcm16k);
         totalFullSamples += pcm16k.length;
 
@@ -169,6 +177,8 @@ export async function startRecording(options?: StartRecordingOptions): Promise<v
         const frameRms = Math.sqrt(sumSq / pcm16k.length);
 
         if (frameRms >= ENERGY_THRESHOLD) {
+            if (firstSpeechSample < 0) firstSpeechSample = frameStartSample;
+            lastSpeechEndSample = frameStartSample + pcm16k.length;
             phraseHasSpeech = true;
             consecutiveSilenceSamples = 0;
         } else {
@@ -221,15 +231,25 @@ export function getVisualizerData(): Uint8Array | null {
 }
 
 export interface StopRecordingResult {
+    /** Normalized, VAD-trimmed full recording. Empty unless `includeFull` was requested. */
     fullAudio: Float32Array;
     trailingAudio: Float32Array;
+    /** Speech duration in seconds (first to last speech frame). */
     durationSec: number;
+    /** True if any audio at all was captured. */
+    hadAudio: boolean;
+}
+
+export interface StopRecordingOptions {
+    /** Merge + VAD + normalize the full recording. Only needed when not using streaming transcription. */
+    includeFull?: boolean;
 }
 
 /**
  * Stops recording, tears down audio nodes, and returns both the uncommitted trailing phrase and the full recording Float32 PCM.
  */
-export async function stopRecordingDirect(): Promise<StopRecordingResult> {
+export async function stopRecordingDirect(options?: StopRecordingOptions): Promise<StopRecordingResult> {
+    const includeFull = options?.includeFull ?? true;
     // Teardown audio graph
     if (scriptProcessor) {
         try { scriptProcessor.disconnect(); } catch (_) { }
@@ -261,12 +281,21 @@ export async function stopRecordingDirect(): Promise<StopRecordingResult> {
         ? normalizeAudio(applyVAD(mergeChunks(currentPhraseChunks, totalPhraseSamples), 16000, 20, ENERGY_THRESHOLD))
         : new Float32Array(0);
 
-    // Merge full audio
-    const fullAudio = totalFullSamples > 0
-        ? normalizeAudio(applyVAD(mergeChunks(fullRecordingChunks, totalFullSamples), 16000, 20, ENERGY_THRESHOLD))
-        : new Float32Array(0);
+    const hadAudio = totalFullSamples > 0;
 
-    const durationSec = fullAudio.length / 16000;
+    // Merging, VAD-trimming and normalizing the whole recording is wasted work when streaming
+    // already transcribed it phrase by phrase, so it is opt-in.
+    let fullAudio: Float32Array = new Float32Array(0);
+    let durationSec: number;
+    if (includeFull && hadAudio) {
+        fullAudio = normalizeAudio(applyVAD(mergeChunks(fullRecordingChunks, totalFullSamples), 16000, 20, ENERGY_THRESHOLD));
+        durationSec = fullAudio.length / 16000;
+    } else {
+        // Same quantity VAD trimming would leave (speech span plus its 60ms padding each side).
+        durationSec = firstSpeechSample >= 0
+            ? (lastSpeechEndSample - firstSpeechSample) / 16000 + 0.12
+            : 0;
+    }
 
     // Clear buffer arrays
     fullRecordingChunks = [];
@@ -277,7 +306,8 @@ export async function stopRecordingDirect(): Promise<StopRecordingResult> {
     return {
         fullAudio,
         trailingAudio,
-        durationSec
+        durationSec,
+        hadAudio
     };
 }
 

@@ -1,6 +1,6 @@
 import './style.css'
 import { startRecording, stopRecordingDirect, decodeAudioBuffer, setAudioDevice, getVisualizerData, applyVAD } from './audio';
-import { loadModel, transcribeAudio, StreamingTranscriptionSession } from './transcribe';
+import { loadModel, transcribeAudio, isModelLoaded, StreamingTranscriptionSession } from './transcribe';
 import { initDiagnostics } from './diagnostics';
 // @ts-ignore
 import micIcon from '../assets/mic.svg'
@@ -41,6 +41,7 @@ declare global {
       onWindowMaximized: (callback: (isMax: boolean) => void) => () => void
       setWindowBounds: (bounds: any) => Promise<{ success: boolean }>
       showCursorSpinner: () => Promise<{ success: boolean }>
+      primeCaret: () => Promise<{ success: boolean }>
       hideCursorSpinner: () => Promise<{ success: boolean }>
       getVramMb: () => Promise<number | null>
       getHardwareProfile: () => Promise<{
@@ -53,7 +54,7 @@ declare global {
         gpuVramMb: number | null
         recommendedTier: 'lightweight' | 'mid' | 'frontier'
       }>
-      llmInit: () => Promise<{ success: boolean; error?: string }>
+      llmInit: (download?: boolean) => Promise<{ success: boolean; error?: string }>
       llmStatus: () => Promise<{
         status: string
         activeModelId: string
@@ -595,11 +596,14 @@ if (appElement) {
 
   let isRecording = false;
   let isProcessing = false;
-  let lastCapturedContext = '';
+  let capturedContextPromise: Promise<string> = Promise.resolve('');
   let historyItems: { text: string, timestamp: number }[] = [];
   let dictionaryPairs: { sound: string, replace: string }[] = [];
   let playSoundsEnabled = true;
   let showNotifyEnabled = true;
+
+  const escapeHtml = (str: string): string =>
+    str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 
   const escapeRegex = (str: string): string => {
     return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -681,7 +685,7 @@ if (appElement) {
 
       entry.innerHTML = `
         <div class="time">[${dayStr}${timeStr}]</div>
-        <div class="content">${item.text}</div>
+        <div class="content">${escapeHtml(item.text)}</div>
         <button class="history-delete" title="Delete dictation">×</button>
       `;
 
@@ -903,6 +907,9 @@ if (appElement) {
 
     if (isProcessing) return;
 
+    // The chat dictation button owns the microphone while it is recording.
+    if (isChatDictating) return;
+
     if (isRecording) {
       isProcessing = true;
       isRecording = false;
@@ -942,9 +949,13 @@ if (appElement) {
       }
 
       try {
-        const { fullAudio, trailingAudio, durationSec } = await stopRecordingDirect();
+        // With streaming, the phrases were already transcribed while recording, so skip
+        // merging/VAD/normalizing the whole recording again.
+        const { fullAudio, trailingAudio, durationSec, hadAudio } = await stopRecordingDirect({
+          includeFull: activeStreamingSession === null
+        });
 
-        if ((!fullAudio || fullAudio.length === 0) && (!trailingAudio || trailingAudio.length === 0)) {
+        if (!hadAudio) {
           statusDot!.className = 'status-indicator green flash';
           statusMessage!.textContent = 'Ready';
           if (btnText) btnText.textContent = 'Click to Record';
@@ -954,9 +965,10 @@ if (appElement) {
         }
 
         // Apply performance settings at transcription time
-        const perfSettings = window.electronAPI ? await window.electronAPI.getSettings() : null;
-        const vadEnabled = perfSettings?.vadEnabled ?? false;
-        const chunkSize = perfSettings?.chunkSize ?? 30;
+        const settings = window.electronAPI ? await window.electronAPI.getSettings() : null;
+        const vadEnabled = settings?.vadEnabled ?? false;
+        const chunkSize = settings?.chunkSize ?? 30;
+        let metricsDirty = false;
 
         let text = '';
         if (activeStreamingSession) {
@@ -974,9 +986,9 @@ if (appElement) {
           const originalWordsCount = text.trim().split(/\s+/).filter(w => w.length > 0).length;
           let processedText = text.trim();
 
-          const settings = window.electronAPI ? await window.electronAPI.getSettings() : null;
           if (settings && settings.removeFiller !== false) {
-            const fillers = ['um', 'uh', 'hmm', 'uhm', 'like'];
+            // "like" is deliberately not here: it is a real word far more often than a filler.
+            const fillers = ['um', 'uh', 'hmm', 'uhm'];
             fillers.forEach(f => {
               const regex = new RegExp(`\\b${f}\\b`, 'gi');
               processedText = processedText.replace(regex, '');
@@ -1001,8 +1013,7 @@ if (appElement) {
           text = processedText;
 
           // AI Reformatting step
-          const aiSettings2 = window.electronAPI ? await window.electronAPI.getSettings() : null;
-          if (aiSettings2?.aiReformat && window.electronAPI) {
+          if (settings?.aiReformat && window.electronAPI) {
             const llmStatus = await window.electronAPI.llmStatus();
             if (llmStatus.status === 'ready') {
               statusMessage!.textContent = 'Reformatting...';
@@ -1010,7 +1021,7 @@ if (appElement) {
               if (islandText2) islandText2.textContent = 'Reformatting...';
 
               try {
-                const result = await window.electronAPI.llmReformat(text, lastCapturedContext);
+                const result = await window.electronAPI.llmReformat(text, await capturedContextPromise);
                 if (result.success && result.text) {
                   text = result.text;
                 }
@@ -1046,15 +1057,7 @@ if (appElement) {
               }
             }
 
-            if (window.electronAPI) {
-              await window.electronAPI.setSetting('metrics', {
-                dictations: metricDictations,
-                words: metricWords,
-                timeSavedSec: metricTimeSavedSec,
-                scoreHistory: scoreHistory
-              });
-            }
-
+            metricsDirty = true;
             updateDashboardUI();
           }
         }
@@ -1070,26 +1073,48 @@ if (appElement) {
 
         if (text && text.trim().length > 0) {
           const now = Date.now();
+          const finalText = text.trim();
+
+          // Paste first: this is the moment the user is waiting for. Everything else (history,
+          // metrics, notification, disk writes) happens after the text is already in their app.
+          const insertPromise = window.electronAPI
+            ? window.electronAPI.insertText(finalText)
+            : Promise.resolve({ success: false });
 
           // Add to history state
-          historyItems.push({ text: text.trim(), timestamp: now });
+          historyItems.push({ text: finalText, timestamp: now });
 
           // Prune history older than 30 days
           const thirtyDaysMs = 30 * 24 * 60 * 60 * 1000;
           historyItems = historyItems.filter(item => now - item.timestamp <= thirtyDaysMs);
 
-          // Re-render and save with animation for the new item
-          renderHistory(now);
-          if (window.electronAPI) {
-            await window.electronAPI.setSetting('dictationHistory', historyItems);
-          }
+          await insertPromise;
 
-          await window.electronAPI.insertText(text.trim());
+          renderHistory(now);
+
+          if (window.electronAPI) {
+            window.electronAPI.setSetting('dictationHistory', historyItems).catch(() => { });
+            if (metricsDirty) {
+              window.electronAPI.setSetting('metrics', {
+                dictations: metricDictations,
+                words: metricWords,
+                timeSavedSec: metricTimeSavedSec,
+                scoreHistory: scoreHistory
+              }).catch(() => { });
+            }
+          }
 
           if (showNotifyEnabled && window.electronAPI) {
-            const preview = text.trim().length > 60 ? text.trim().slice(0, 57) + '...' : text.trim();
+            const preview = finalText.length > 60 ? finalText.slice(0, 57) + '...' : finalText;
             window.electronAPI.showNotification('WaveScribe Dictation', preview).catch(() => { });
           }
+        } else if (metricsDirty && window.electronAPI) {
+          window.electronAPI.setSetting('metrics', {
+            dictations: metricDictations,
+            words: metricWords,
+            timeSavedSec: metricTimeSavedSec,
+            scoreHistory: scoreHistory
+          }).catch(() => { });
         }
       } catch (err) {
         console.error(err);
@@ -1109,12 +1134,13 @@ if (appElement) {
         }
       }
     } else {
-      isProcessing = true;
-
-      if (playSoundsEnabled) {
-        const startSound = new Audio(startSoundFile);
-        startSound.play().catch(e => console.warn("Could not play start sound:", e));
+      // Without a loaded model every phrase would fail; the status line already shows why.
+      if (!isModelLoaded()) {
+        console.warn('[Record] Ignored: transcription model is not loaded yet');
+        return;
       }
+
+      isProcessing = true;
 
       statusDot!.className = 'status-indicator red flash';
       statusMessage!.textContent = 'Starting...';
@@ -1126,14 +1152,16 @@ if (appElement) {
       if (islandDot) islandDot.className = 'status-indicator red flash';
       if (islandText) islandText.textContent = 'Starting...';
 
-      // Capture context from the focused app before starting the microphone
-      lastCapturedContext = '';
+      // Capture context from the focused app IN PARALLEL with opening the microphone. It is only
+      // awaited when the AI cleanup step needs it, so it never delays the first spoken words.
+      capturedContextPromise = Promise.resolve('');
       if (window.electronAPI) {
         try {
           const aiSettings = await window.electronAPI.getSettings();
           if (aiSettings?.aiReformat) {
-            const ctx = await window.electronAPI.captureContext();
-            if (ctx.success) lastCapturedContext = ctx.text;
+            capturedContextPromise = window.electronAPI.captureContext()
+              .then(ctx => (ctx.success ? ctx.text : ''))
+              .catch(() => '');
           }
         } catch {}
       }
@@ -1151,6 +1179,16 @@ if (appElement) {
         });
         isRecording = true;
 
+        // Cue the user only once the microphone is actually open, so nobody starts talking early.
+        if (playSoundsEnabled) {
+          const startSound = new Audio(startSoundFile);
+          startSound.play().catch(e => console.warn("Could not play start sound:", e));
+        }
+
+        // Look up the caret position now, while the CPU is idle, so the spinner can appear
+        // instantly when recording stops.
+        window.electronAPI?.primeCaret().catch(() => { });
+
         // Reset volume history on new recording
         volumeHistory.fill(0);
         smoothedAmplitude = 0;
@@ -1167,6 +1205,7 @@ if (appElement) {
         if (islandText) islandText.textContent = 'Recording...';
       } catch (err) {
         console.error("Microphone failed to start:", err);
+        activeStreamingSession = null;
         statusDot!.className = 'status-indicator red';
         statusMessage!.textContent = 'Error';
         if (btnText) btnText.textContent = 'Click to Record';
@@ -1267,7 +1306,7 @@ if (appElement) {
     if (aiProgressBar) aiProgressBar.style.display = 'block';
     if (aiStatusDot) aiStatusDot.className = 'status-indicator loading';
     if (aiStatusText) aiStatusText.textContent = 'Starting download...';
-    const result = await window.electronAPI.llmInit();
+    const result = await window.electronAPI.llmInit(true);
     if (result.success) {
       await updateAiStatusUI();
     } else {
@@ -1392,8 +1431,8 @@ if (appElement) {
       row.style.alignItems = 'center';
 
       row.innerHTML = `
-        <div style="flex: 1; color: var(--text-primary); font-weight: 500;">${pair.sound}</div>
-        <div style="flex: 1; color: var(--green); font-weight: 600;">${pair.replace}</div>
+        <div style="flex: 1; color: var(--text-primary); font-weight: 500;">${escapeHtml(pair.sound)}</div>
+        <div style="flex: 1; color: var(--green); font-weight: 600;">${escapeHtml(pair.replace)}</div>
         <button class="btn btn-secondary btn-small disable-enter" style="padding: 4px 8px; color: var(--red); background: transparent; border: none; font-size: 16px;">×</button>
       `;
 
@@ -2470,10 +2509,10 @@ if (appElement) {
         chatMessages.push({ role: 'assistant', content: response.text, timestamp: Date.now() });
         assistantBubble.textContent = response.text;
       } else if (!response.success && response.error) {
-        assistantBubble.innerHTML = `<span style="color: var(--red);">Error: ${response.error || 'Failed to generate response'}</span>`;
+        assistantBubble.innerHTML = `<span style="color: var(--red);">Error: ${escapeHtml(response.error || 'Failed to generate response')}</span>`;
       }
     } catch (err: any) {
-      assistantBubble.innerHTML = `<span style="color: var(--red);">Error: ${err.message || String(err)}</span>`;
+      assistantBubble.innerHTML = `<span style="color: var(--red);">Error: ${escapeHtml(err.message || String(err))}</span>`;
     } finally {
       isGeneratingChat = false;
       btnChatSend.classList.remove('stop-mode');
@@ -2604,6 +2643,9 @@ if (appElement) {
   let chatStreamingSession: StreamingTranscriptionSession | null = null;
 
   btnChatDictate?.addEventListener('click', async () => {
+    // The microphone/audio state is shared with the main dictation flow; don't collide with it.
+    if (!isChatDictating && (isRecording || isProcessing || !isModelLoaded())) return;
+
     if (isChatDictating) {
       // Stop recording and transcribe
       isChatDictating = false;
@@ -2625,7 +2667,7 @@ if (appElement) {
       chatInputTextarea.placeholder = 'Transcribing voice prompt...';
 
       try {
-        const { fullAudio, trailingAudio } = await stopRecordingDirect();
+        const { fullAudio, trailingAudio } = await stopRecordingDirect({ includeFull: chatStreamingSession === null });
         let transcribed = '';
         if (chatStreamingSession) {
           transcribed = await chatStreamingSession.finalize(trailingAudio);

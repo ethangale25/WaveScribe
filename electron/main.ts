@@ -20,6 +20,7 @@ import {
     OPEN_MODELS
 } from './llm'
 import { captureContext } from './context-capture'
+import { sendCtrlV, getCursorPosition } from './win32'
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
@@ -214,21 +215,13 @@ app.on('will-quit', () => {
     globalShortcut.unregisterAll()
 })
 
-// IPC commands for Text injection via PowerShell
-ipcMain.handle('insert-text', async (event, text) => {
+// PowerShell fallback for pasting, used only if the native Win32 layer is unavailable.
+function sendCtrlVViaPowerShell(): Promise<boolean> {
     return new Promise((resolve) => {
-        try {
-            // Save the current clipboard content
-            const previousClipboard = clipboard.readText();
+        const uniqueId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+        const scriptPath = path.join(app.getPath('temp'), `insert-text-${uniqueId}.ps1`);
 
-            // Set the new text to the clipboard
-            clipboard.writeText(text);
-
-            // Use PowerShell with Win32 keybd_event to send Ctrl+V.
-            const uniqueId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-            const scriptPath = path.join(app.getPath('temp'), `insert-text-${uniqueId}.ps1`);
-
-            const ps1Content = `
+        const ps1Content = `
 Add-Type -TypeDefinition @"
 using System;
 using System.Runtime.InteropServices;
@@ -245,43 +238,43 @@ public class Kbd {
     }
 }
 "@
-Start-Sleep -Milliseconds 50
 [Kbd]::CtrlV()
             `;
 
+        try {
             fs.writeFileSync(scriptPath, ps1Content, 'utf-8');
-
-            const process = spawn('powershell', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', scriptPath], { windowsHide: true });
-
-            process.on('close', (code) => {
-                try {
-                    if (fs.existsSync(scriptPath)) {
-                        fs.unlinkSync(scriptPath);
-                    }
-                } catch (e) {
-                    // Ignore deletion error
-                }
-
-                // Restore the original clipboard content only if it still matches the pasted text
-                setTimeout(() => {
-                    if (clipboard.readText() === text) {
-                        clipboard.writeText(previousClipboard);
-                    }
-                }, 350);
-
-                resolve({ success: code === 0 });
-            });
-
-            process.on('error', (err) => {
-                console.error('[InsertText Error]:', err);
-                try { if (fs.existsSync(scriptPath)) fs.unlinkSync(scriptPath); } catch (_) { }
-                resolve({ success: false, error: String(err) });
-            })
-        } catch (error) {
-            console.error('Failed to insert text', error)
-            resolve({ success: false, error: String(error) })
+        } catch (e) {
+            return resolve(false);
         }
+
+        const cleanup = () => { try { if (fs.existsSync(scriptPath)) fs.unlinkSync(scriptPath); } catch (_) { } };
+        const proc = spawn('powershell', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', scriptPath], { windowsHide: true });
+        proc.on('close', (code) => { cleanup(); resolve(code === 0); });
+        proc.on('error', (err) => { console.error('[InsertText Error]:', err); cleanup(); resolve(false); });
     });
+}
+
+// IPC commands for text injection: set clipboard, send Ctrl+V, restore clipboard.
+ipcMain.handle('insert-text', async (event, text: string) => {
+    try {
+        const previousClipboard = clipboard.readText();
+        clipboard.writeText(text);
+
+        // Native SendInput takes ~1ms; PowerShell (cold start + C# compile) takes hundreds.
+        const success = sendCtrlV() || await sendCtrlVViaPowerShell();
+
+        // Restore the original clipboard only if it still holds what we pasted.
+        setTimeout(() => {
+            if (clipboard.readText() === text) {
+                clipboard.writeText(previousClipboard);
+            }
+        }, 350);
+
+        return { success };
+    } catch (error) {
+        console.error('Failed to insert text', error)
+        return { success: false, error: String(error) }
+    }
 })
 
 // IPC commands for settings
@@ -535,10 +528,26 @@ if (-not $pos) {
     });
 }
 
-ipcMain.handle('show-cursor-spinner', async () => {
+// The UI Automation caret lookup is slow (PowerShell + C# compile), so it runs when recording
+// STARTS, while the CPU is idle, instead of on the critical path when recording stops.
+let cachedCaret: { x: number, y: number } | null = null;
+
+ipcMain.handle('prime-caret', () => {
+    cachedCaret = null;
+    getCaretScreenPosition()
+        .then((pos) => { cachedCaret = pos; })
+        .catch(() => { });
+    return { success: true };
+});
+
+ipcMain.handle('show-cursor-spinner', () => {
     if (!spinnerWindow) return { success: false };
     try {
-        const pos = await getCaretScreenPosition();
+        // Use the primed caret if ready, otherwise the mouse position. Never wait on PowerShell here.
+        const pos = cachedCaret ?? getCursorPosition() ?? (() => {
+            const display = screen.getPrimaryDisplay();
+            return { x: display.bounds.width / 2, y: display.bounds.height / 2 };
+        })();
         // Offset slightly right and above/level with the caret so it aligns with the text insertion point
         spinnerWindow.setBounds({ x: pos.x + 2, y: pos.y - 4, width: 36, height: 36 });
         spinnerWindow.showInactive();
@@ -624,9 +633,11 @@ ipcMain.handle('llm-load-model', async (_event, modelId: string) => {
     }
 });
 
-ipcMain.handle('llm-init', async () => {
+ipcMain.handle('llm-init', async (_event, download?: boolean) => {
     try {
-        await initLlm();
+        await initLlm(download ? (progress) => {
+            mainWindow?.webContents.send('llm-download-progress', progress);
+        } : undefined);
         return { success: true };
     } catch (err: any) {
         return { success: false, error: err.message || String(err) };

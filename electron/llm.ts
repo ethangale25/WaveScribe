@@ -331,7 +331,9 @@ export async function downloadModel(
     const modelPath = getModelPath(meta.filename)
     if (isModelDownloaded(modelId)) return
 
-    status = 'downloading'
+    // Downloading a second model must not knock an already-loaded model out of 'ready'.
+    const wasReady = status === 'ready'
+    if (!wasReady) status = 'downloading'
     activeDownloadModelId = modelId
     downloadProgress = 0
     downloadLoadedBytes = 0
@@ -343,7 +345,7 @@ export async function downloadModel(
 
         const follow = (url: string, redirects = 0) => {
             if (redirects > 8) {
-                status = 'error'
+                if (!wasReady) status = 'error'
                 activeDownloadModelId = null
                 errorMessage = 'Too many redirects'
                 return reject(new Error('Too many redirects'))
@@ -355,7 +357,7 @@ export async function downloadModel(
                     return follow(res.headers.location!, redirects + 1)
                 }
                 if (res.statusCode !== 200) {
-                    status = 'error'
+                    if (!wasReady) status = 'error'
                     activeDownloadModelId = null
                     errorMessage = `HTTP ${res.statusCode}`
                     return reject(new Error(`HTTP ${res.statusCode}`))
@@ -386,7 +388,7 @@ export async function downloadModel(
                         try {
                             if (fs.existsSync(modelPath)) fs.unlinkSync(modelPath)
                             fs.renameSync(tempPath, modelPath)
-                            status = 'not-downloaded'
+                            status = wasReady ? 'ready' : 'not-downloaded'
                             activeDownloadModelId = null
                             downloadProgress = 100
                             downloadLoadedBytes = totalBytes
@@ -398,7 +400,7 @@ export async function downloadModel(
                             })
                             resolve()
                         } catch (err: any) {
-                            status = 'error'
+                            if (!wasReady) status = 'error'
                             activeDownloadModelId = null
                             errorMessage = 'Failed to save model file'
                             reject(err)
@@ -409,13 +411,13 @@ export async function downloadModel(
                 res.on('error', (err) => {
                     fileStream.close()
                     try { fs.unlinkSync(tempPath) } catch { }
-                    status = 'error'
+                    if (!wasReady) status = 'error'
                     activeDownloadModelId = null
                     errorMessage = err.message
                     reject(err)
                 })
             }).on('error', (err) => {
-                status = 'error'
+                if (!wasReady) status = 'error'
                 activeDownloadModelId = null
                 errorMessage = err.message
                 reject(err)
@@ -471,9 +473,17 @@ export async function loadModel(modelId: string): Promise<void> {
     }
 }
 
-export async function initLlm(): Promise<void> {
-    const downloaded = OPEN_MODELS.find(m => isModelDownloaded(m.id))
+export async function initLlm(onDownloadProgress?: (progress: { modelId: string; percent: number; loadedBytes: number; totalBytes: number }) => void): Promise<void> {
+    // Prefer the model already selected, then any downloaded model, then the default.
+    const downloaded = isModelDownloaded(activeModelId)
+        ? OPEN_MODELS.find(m => m.id === activeModelId)
+        : OPEN_MODELS.find(m => isModelDownloaded(m.id))
     const target = downloaded ? downloaded.id : activeModelId
+
+    // Only download when the caller asked for it (the explicit Download button).
+    if (!isModelDownloaded(target) && onDownloadProgress) {
+        await downloadModel(target, onDownloadProgress)
+    }
     await loadModel(target)
 }
 
@@ -495,8 +505,15 @@ function buildSystemPrompt(surroundingContext?: string): string {
     return prompt
 }
 
+const REFORMAT_TIMEOUT_MS = 10000
+const REFORMAT_MAX_INPUT_CHARS = 5000
+
 export async function reformatText(rawText: string, surroundingContext?: string): Promise<string> {
     if (status !== 'ready' || !model) {
+        return rawText
+    }
+    // Very long dictations would not fit the cleanup context; paste them as dictated.
+    if (rawText.length > REFORMAT_MAX_INPUT_CHARS) {
         return rawText
     }
 
@@ -504,33 +521,43 @@ export async function reformatText(rawText: string, surroundingContext?: string)
 
     let tempCtx: any = null
     let session: any = null
+    const abort = new AbortController()
+    const timer = setTimeout(() => abort.abort(), REFORMAT_TIMEOUT_MS)
     try {
-        tempCtx = await model.createContext({ contextSize: 1024 })
+        tempCtx = await model.createContext({ contextSize: 4096 })
         session = new LlamaChatSession({
             contextSequence: tempCtx.getSequence(),
             systemPrompt: buildSystemPrompt(surroundingContext)
         })
 
-        const timeoutPromise = new Promise<string>((_, reject) =>
-            setTimeout(() => reject(new Error('LLM timeout')), 10000)
-        )
+        // Output is roughly the same length as the input, so size the budget from the input
+        // (the old fixed 256 tokens truncated anything past ~190 words).
+        const maxTokens = Math.min(2048, Math.ceil(rawText.length / 2.5) + 48)
 
-        const response: string = await Promise.race([
-            session.prompt(rawText, { maxTokens: 256, temperature: 0.1 }),
-            timeoutPromise
-        ])
+        // The signal really stops generation, unlike racing a timer against a running prompt.
+        const response: string = await session.prompt(rawText, {
+            maxTokens,
+            temperature: 0.1,
+            signal: abort.signal
+        })
 
         const cleaned = response.trim()
 
-        if (!cleaned || cleaned.length < rawText.length * 0.3 || cleaned.length > rawText.length * 3) {
+        // Reject empty, runaway or visibly truncated output and keep the dictated text.
+        if (!cleaned || cleaned.length < rawText.length * 0.6 || cleaned.length > rawText.length * 3) {
             return rawText
         }
 
         return cleaned
     } catch (err) {
-        console.error('[LLM] Inference error:', err)
+        if (abort.signal.aborted) {
+            console.warn('[LLM] Reformat timed out, using original text')
+        } else {
+            console.error('[LLM] Inference error:', err)
+        }
         return rawText
     } finally {
+        clearTimeout(timer)
         try { session?.dispose() } catch { }
         try { tempCtx?.dispose() } catch { }
     }

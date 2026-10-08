@@ -41,6 +41,10 @@ export async function loadModel(
     return transcriber;
 }
 
+export function isModelLoaded(): boolean {
+    return transcriber !== null;
+}
+
 export function getCurrentDevice(): 'cpu' | 'webgpu' {
     return currentDevice;
 }
@@ -95,50 +99,71 @@ export function cleanTranscribedText(rawString: string): string {
     return finalString;
 }
 
+// All inference is funneled through one queue. Running several inferences against the same
+// pipeline at once makes them fight for the thread (and may fail outright), which silently
+// dropped words when phrases were dispatched during recording.
+let inferenceQueue: Promise<unknown> = Promise.resolve();
+
+function enqueueInference<T>(job: () => Promise<T>): Promise<T> {
+    const run = inferenceQueue.then(job, job);
+    inferenceQueue = run.catch(() => undefined);
+    return run;
+}
+
+const WHISPER_WINDOW_SAMPLES = 16000 * 30;
+
 /**
  * Transcribes a 16kHz Float32Array audio buffer.
  */
-export async function transcribeAudio(audioData: Float32Array, chunkSize: number = 30): Promise<string> {
+export function transcribeAudio(audioData: Float32Array, chunkSize: number = 30): Promise<string> {
     if (!transcriber) {
-        throw new Error("Transcriber model not loaded");
+        return Promise.reject(new Error("Transcriber model not loaded"));
     }
 
     if (!audioData || audioData.length < 16000 * 0.15) {
-        return ''; // Skip audio shorter than 150ms to prevent hallucinations
+        return Promise.resolve(''); // Skip audio shorter than 150ms to prevent hallucinations
     }
 
-    const isMoonshine = currentModelName.toLowerCase().includes('moonshine');
-    const isEnglishOnly = currentModelName.endsWith('.en');
+    return enqueueInference(async () => {
+        // The model may have been disposed/reloaded while this job waited in the queue.
+        if (!transcriber) throw new Error("Transcriber model not loaded");
 
-    let result: any;
+        const isMoonshine = currentModelName.toLowerCase().includes('moonshine');
+        const isEnglishOnly = currentModelName.endsWith('.en');
 
-    if (isMoonshine) {
-        // Moonshine processes variable-length raw audio directly without 30s chunking/timestamps
-        result = await transcriber(audioData);
-    } else {
-        // Whisper models
-        const options: any = {
-            chunk_length_s: chunkSize,
-            stride_length_s: Math.max(1, Math.floor(chunkSize / 6)),
-            return_timestamps: true,
-        };
+        let result: any;
 
-        if (!isEnglishOnly) {
-            options.language = 'en';
-            options.task = 'transcribe';
+        if (isMoonshine) {
+            // Moonshine cost scales with audio length; cap decoding so noisy input can't loop.
+            const seconds = audioData.length / 16000;
+            result = await transcriber(audioData, { max_new_tokens: Math.ceil(seconds * 8) + 8 });
+        } else {
+            const options: any = {};
+
+            // Chunking and timestamps only matter for audio longer than Whisper's 30s window.
+            if (audioData.length > WHISPER_WINDOW_SAMPLES) {
+                options.chunk_length_s = chunkSize;
+                options.stride_length_s = Math.max(1, Math.floor(chunkSize / 6));
+                options.return_timestamps = true;
+            }
+
+            if (!isEnglishOnly) {
+                options.language = 'en';
+                options.task = 'transcribe';
+            }
+
+            result = await transcriber(audioData, options);
         }
 
-        result = await transcriber(audioData, options);
-    }
+        let extractedText = '';
+        if (result && typeof result.text === 'string') {
+            extractedText = result.text.trim();
+        } else if (Array.isArray(result)) {
+            extractedText = result.map((r: any) => r.text ?? '').join(' ').trim();
+        }
 
-    let extractedText = '';
-    if (result && typeof result.text === 'string') {
-        extractedText = result.text.trim();
-    } else if (Array.isArray(result)) {
-        extractedText = result.map((r: any) => r.text ?? '').join(' ').trim();
-    }
-
-    return cleanTranscribedText(extractedText);
+        return cleanTranscribedText(extractedText);
+    });
 }
 
 /**
@@ -148,6 +173,7 @@ export class StreamingTranscriptionSession {
     private chunkPromises: Array<{ id: number; promise: Promise<string>; text?: string }> = [];
     private nextId = 0;
     private isFinalized = false;
+    private lastError: unknown = null;
 
     /**
      * Dispatches a completed phrase chunk to the background transcriber immediately.
@@ -162,6 +188,7 @@ export class StreamingTranscriptionSession {
                 return text;
             } catch (err) {
                 console.warn(`[StreamingSession] Error transcribing chunk #${chunkId}:`, err);
+                this.lastError = err;
                 return '';
             }
         })();
@@ -205,6 +232,11 @@ export class StreamingTranscriptionSession {
             .join(' ')
             .replace(/\s{2,}/g, ' ')
             .trim();
+
+        // If every chunk failed, surface the error instead of reporting an empty dictation.
+        if (!assembled && this.lastError) {
+            throw this.lastError instanceof Error ? this.lastError : new Error(String(this.lastError));
+        }
 
         return assembled;
     }

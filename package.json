@@ -24,6 +24,7 @@
   "dependencies": {
     "@huggingface/transformers": "^3.8.1",
     "electron-store": "^11.0.2",
+    "koffi": "^3.3.2",
     "node-llama-cpp": "^3.18.1"
   },
   "build": {
@@ -42,7 +43,8 @@
       "createDesktopShortcut": true
     },
     "asarUnpack": [
-      "node_modules/node-llama-cpp/**"
+      "node_modules/node-llama-cpp/**",
+      "node_modules/koffi/**"
     ],
     "files": [
       "dist/**/*",

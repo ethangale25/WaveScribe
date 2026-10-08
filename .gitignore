@@ -6,3 +6,4 @@ release/
 .claude/settings.local.json
 tools/eval/run.mjs
 tools/eval/data/
+venv/

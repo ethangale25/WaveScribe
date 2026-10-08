@@ -1,154 +1,54 @@
-# 🎙️ Voice Dictation Tool (GUI Edition)
+# WaveScribe
 
-A sleek, Apple-inspired voice dictation application with a modern graphical interface.
-
-![Theme: Dark Mode]
+Local, private voice dictation for Windows. Press a hotkey, talk, press it again, and the text is
+pasted into whatever app you were using. Speech recognition and the optional AI cleanup both run
+on your machine; no audio leaves it.
 
 ## Features
 
-- **Modern UI** - Clean, Apple-inspired design with dark/light themes
-- **Global Hotkey** - Works in any application
-- **Customizable Settings** - Change hotkey, model, language, and more
-- **Dictation History** - See and copy your recent dictations
-- **Statistics** - Track your usage and time saved
-- **Filler Word Removal** - Automatically removes "um", "uh", "like", etc.
+- **Global hotkey** (default `Ctrl+Shift+Space`) works in any app
+- **Streaming transcription**: speech is decoded phrase by phrase while you talk, so text appears
+  almost immediately after you stop
+- **Live preview** of the decoded text in the status line / island while recording
+- **Local speech models**: Moonshine and (distil-)Whisper via transformers.js, CPU or WebGPU
+- **Optional AI cleanup**: a local LLM fixes punctuation and speech-to-text slips
+- **Local AI chat** with downloadable open models, sized to your hardware
+- Filler-word removal, dictionary replacements, auto-capitalization and punctuation
+- Dictation history, usage stats, mini "island" mode, system tray (closing the window keeps the hotkey alive)
 
-## Installation (Windows)
-
-### Step 1: Open Command Prompt in Your Project Folder
-
-1. Create a folder for the project (e.g., `C:\Users\YourName\voice-dictation`)
-2. Save `dictation_gui.py` and `requirements.txt` in that folder
-3. Open File Explorer, navigate to the folder
-4. Click the address bar, type `cmd`, press Enter
-
-### Step 2: Create Virtual Environment
+## Develop
 
 ```
-python -m venv venv
+npm install
+npm run dev        # Vite + Electron
+npx tsc --noEmit   # typecheck
 ```
 
-### Step 3: Activate Virtual Environment
+## Build the installer
 
 ```
-venv\Scripts\activate
+npm run build      # vite build + electron-builder (NSIS installer in release/)
 ```
 
-You should see `(venv)` at the start of your command line.
+## How dictation works
 
-### Step 4: Install Dependencies
+1. `src/audio.ts` captures 16 kHz mono audio and feeds `src/segmenter.ts`, which splits it into
+   phrases at natural pauses. If someone talks for 6.5 s without a pause, it cuts at the quietest
+   point instead of mid-word.
+2. Each phrase goes to `StreamingTranscriptionSession` (`src/transcribe.ts`), which decodes one
+   phrase at a time while recording continues.
+3. When you stop, only the final fragment is left to decode. `src/stitch.ts` then joins the phrases:
+   at a forced cut it removes the false full stop the model added and lowercases the continuation.
+4. Filler removal, dictionary, capitalization and (optionally) the local LLM run, then the text is
+   pasted with a native `SendInput` call (`electron/win32.ts`).
 
-```
-pip install openai-whisper sounddevice numpy pynput pyperclip pyautogui sv-ttk
-```
+## Measuring changes
 
-### Step 5: Run the Application
+`tools/eval` runs synthetic speech through the real pipeline and reports stop-to-text latency and
+word error rate against decoding the whole clip in one pass. See `tools/eval/README.md`.
 
-```
-python dictation_gui.py
-```
+## Project notes
 
-## Usage
-
-1. **Launch the app** - A window will appear
-2. **Wait for "Ready"** - The status indicator turns green when the model is loaded
-3. **Press Ctrl+Shift+Space** - Start recording (indicator turns red)
-4. **Speak naturally** - Say whatever you want to type
-5. **Press Ctrl+Shift+Space again** - Stop recording and process
-6. **Text appears** - In whatever app had focus before you started
-
-## Interface Guide
-
-```
-┌────────────────────────────────────────┐
-│  Voice Dictation                       │
-│  Speak naturally, type effortlessly    │
-├────────────────────────────────────────┤
-│  Status                                │
-│  ● Ready          [ctrl+shift + space] │
-├────────────────────────────────────────┤
-│  Statistics                            │
-│     42          1,234        15m       │
-│  Dictations     Words     Time Saved   │
-├────────────────────────────────────────┤
-│  Recent Dictations                     │
-│  [14:32] Hello this is a test...       │
-│  [14:28] Another dictation example...  │
-│  [14:15] Meeting notes from today...   │
-│                                        │
-│  Double-click to copy                  │
-├────────────────────────────────────────┤
-│  [⚙ Settings]          [◐ Toggle Theme]│
-└────────────────────────────────────────┘
-```
-
-## Settings
-
-Click **⚙ Settings** to customize:
-
-- **Hotkey** - Change the modifier (ctrl+shift, ctrl+alt, etc.) and key (space, d, f1, etc.)
-- **Model** - Choose accuracy vs speed (tiny → large)
-- **Language** - Set your language or use auto-detect
-- **Text Processing** - Toggle filler word removal, auto-capitalization, sounds
-
-## Keyboard Shortcuts
-
-| Shortcut | Action |
-|----------|--------|
-| Ctrl+Shift+Space | Start/Stop recording (default) |
-| Double-click history item | Copy to clipboard |
-
-## Themes
-
-Click **◐ Toggle Theme** to switch between:
-- **Dark Mode** - Easy on the eyes, great for night use
-- **Light Mode** - Classic bright interface
-
-## Troubleshooting
-
-**"No module named 'whisper'"**
-```
-venv\Scripts\activate
-pip install openai-whisper
-```
-
-**"No module named 'sv_ttk'"**
-```
-pip install sv-ttk
-```
-(The app will still work without it, just with a basic theme)
-
-**Hotkey not working**
-- Make sure no other app is using that hotkey
-- Try changing the hotkey in Settings
-
-**Slow transcription**
-- Use a smaller model (Settings → Model → tiny or base)
-
-## Running Again Later
-
-1. Open command prompt in your project folder
-2. Activate the virtual environment:
-   ```
-   venv\Scripts\activate
-   ```
-3. Run the app:
-   ```
-   python dictation_gui.py
-   ```
-
-## Create a Desktop Shortcut (Optional)
-
-1. Right-click on Desktop → New → Shortcut
-2. Enter this as the location:
-   ```
-   C:\Users\YourName\voice-dictation\venv\Scripts\pythonw.exe C:\Users\YourName\voice-dictation\dictation_gui.py
-   ```
-3. Name it "Voice Dictation"
-4. Click Finish
-
-Now you can double-click to launch!
-
----
-
-Enjoy hands-free typing! 🎤✨
+- `AUDIT.md` lists known issues and the remaining roadmap.
+- Settings and history are stored with `electron-store` in your user profile.
+- Licensed under the terms in `LICENSE.txt`.

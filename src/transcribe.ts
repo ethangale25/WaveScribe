@@ -7,22 +7,13 @@ import type { PhraseMeta } from './segmenter';
 
 export { cleanTranscribedText } from './asr-engine';
 
-type Device = 'cpu' | 'webgpu';
+export type Device = 'cpu' | 'webgpu';
 
 interface Pending {
     resolve: (value: any) => void;
     reject: (err: Error) => void;
     onProgress?: (info: any) => void;
 }
-
-let worker: Worker | null = null;
-let nextRequestId = 1;
-const pending = new Map<number, Pending>();
-
-// State mirrored from the worker so callers can query it synchronously.
-let loaded = false;
-let currentModelName = 'Xenova/whisper-tiny.en';
-let currentDevice: Device = 'cpu';
 
 function toError(msg: { name?: string; message: string; code?: string }): Error {
     // RangeError is how the out-of-memory case is recognised by callers.
@@ -31,110 +22,138 @@ function toError(msg: { name?: string; message: string; code?: string }): Error 
     return err;
 }
 
-function failAll(err: Error): void {
-    for (const p of pending.values()) p.reject(err);
-    pending.clear();
-}
+/**
+ * One speech engine running in its own Web Worker. The app uses a single shared instance (the
+ * exported functions below); the speed test creates throw-away instances so it never disturbs
+ * the model that is being used for dictation.
+ */
+export class AsrClient {
+    private worker: Worker | null = null;
+    private nextRequestId = 1;
+    private pending = new Map<number, Pending>();
 
-function getWorker(): Worker {
-    if (worker) return worker;
+    // State mirrored from the worker so callers can query it synchronously.
+    private loaded = false;
+    private modelName = 'Xenova/whisper-tiny.en';
+    private device: Device = 'cpu';
 
-    const w = new Worker(new URL('./asr.worker.ts', import.meta.url), { type: 'module' });
-    w.onmessage = (event: MessageEvent) => {
-        const msg = event.data;
-        const entry = pending.get(msg.id);
-        if (!entry) return;
-        if (msg.type === 'progress') {
-            entry.onProgress?.(msg.info);
-            return;
+    private failAll(err: Error): void {
+        for (const p of this.pending.values()) p.reject(err);
+        this.pending.clear();
+    }
+
+    private getWorker(): Worker {
+        if (this.worker) return this.worker;
+
+        const w = new Worker(new URL('./asr.worker.ts', import.meta.url), { type: 'module' });
+        w.onmessage = (event: MessageEvent) => {
+            const msg = event.data;
+            const entry = this.pending.get(msg.id);
+            if (!entry) return;
+            if (msg.type === 'progress') {
+                entry.onProgress?.(msg.info);
+                return;
+            }
+            this.pending.delete(msg.id);
+            if (msg.type === 'result') entry.resolve(msg.value);
+            else entry.reject(toError(msg));
+        };
+        w.onerror = (event) => {
+            // A crashed worker (e.g. out of memory) takes its model with it; start fresh next time.
+            console.error('[Transcribe] Worker crashed:', event.message);
+            this.loaded = false;
+            this.worker = null;
+            this.failAll(new Error(`Speech engine crashed: ${event.message}`));
+        };
+        this.worker = w;
+        return w;
+    }
+
+    private request<T>(message: Record<string, unknown>, onProgress?: (info: any) => void, transfer?: Transferable[]): Promise<T> {
+        return new Promise<T>((resolve, reject) => {
+            const id = this.nextRequestId++;
+            this.pending.set(id, { resolve, reject, onProgress });
+            this.getWorker().postMessage({ ...message, id }, transfer ?? []);
+        });
+    }
+
+    async loadModel(
+        modelName: string = 'Xenova/whisper-tiny.en',
+        device: Device = 'cpu',
+        dtype: string | undefined = undefined,
+        onProgress?: (info: any) => void
+    ): Promise<void> {
+        // Check WebGPU availability before attempting to use it
+        if (device === 'webgpu' && !(typeof navigator !== 'undefined' && 'gpu' in navigator)) {
+            const err = new Error('WebGPU is not available on this system');
+            (err as any).code = 'WEBGPU_UNAVAILABLE';
+            throw err;
         }
-        pending.delete(msg.id);
-        if (msg.type === 'result') entry.resolve(msg.value);
-        else entry.reject(toError(msg));
-    };
-    w.onerror = (event) => {
-        // A crashed worker (e.g. out of memory) takes its model with it; start fresh next time.
-        console.error('[Transcribe] Worker crashed:', event.message);
-        loaded = false;
-        worker = null;
-        failAll(new Error(`Speech engine crashed: ${event.message}`));
-    };
-    worker = w;
-    return w;
+
+        // The engine releases any previous pipeline itself; until the new one is ready nothing is loaded.
+        this.loaded = false;
+        this.modelName = modelName;
+        this.device = device;
+
+        await this.request<void>({ type: 'load', model: modelName, device, dtype }, onProgress);
+        this.loaded = true;
+    }
+
+    isModelLoaded(): boolean { return this.loaded; }
+    getCurrentDevice(): Device { return this.device; }
+    getCurrentModelName(): string { return this.modelName; }
+
+    /** Releases the current pipeline (and its WebGPU/WASM buffers). */
+    async dispose(): Promise<void> {
+        this.loaded = false;
+        if (!this.worker) return;
+        try {
+            await this.request<void>({ type: 'dispose' });
+        } catch (err) {
+            console.warn('[Transcribe] dispose failed:', err);
+        }
+    }
+
+    /** Stops the worker entirely, freeing everything it holds. */
+    terminate(): void {
+        this.loaded = false;
+        this.worker?.terminate();
+        this.worker = null;
+        this.failAll(new Error('Speech engine stopped'));
+    }
+
+    /** Transcribes a 16kHz Float32Array audio buffer (decoded in the worker, one job at a time). */
+    transcribe(audioData: Float32Array, chunkSize: number = 30): Promise<string> {
+        if (!this.loaded) {
+            return Promise.reject(new Error("Transcriber model not loaded"));
+        }
+
+        if (!audioData || audioData.length < 16000 * 0.15) {
+            return Promise.resolve(''); // Skip audio shorter than 150ms to prevent hallucinations
+        }
+
+        // Send a copy: the buffer is transferred (not cloned) to the worker, and callers such as the
+        // diagnostics harness reuse the same recording for many runs.
+        const pcm = audioData.slice();
+        return this.request<string>({ type: 'transcribe', pcm, chunkSize }, undefined, [pcm.buffer]);
+    }
 }
 
-function request<T>(message: Record<string, unknown>, onProgress?: (info: any) => void, transfer?: Transferable[]): Promise<T> {
-    return new Promise<T>((resolve, reject) => {
-        const id = nextRequestId++;
-        pending.set(id, { resolve, reject, onProgress });
-        getWorker().postMessage({ ...message, id }, transfer ?? []);
-    });
-}
+// The engine used for dictation.
+const defaultClient = new AsrClient();
 
-export async function loadModel(
-    modelName: string = 'Xenova/whisper-tiny.en',
-    device: Device = 'cpu',
-    dtype: string | undefined = undefined,
+export const loadModel = (
+    modelName?: string,
+    device?: Device,
+    dtype?: string,
     onProgress?: (info: any) => void
-): Promise<void> {
-    // Check WebGPU availability before attempting to use it
-    if (device === 'webgpu' && !(typeof navigator !== 'undefined' && 'gpu' in navigator)) {
-        const err = new Error('WebGPU is not available on this system');
-        (err as any).code = 'WEBGPU_UNAVAILABLE';
-        throw err;
-    }
-
-    // The engine releases any previous pipeline itself; until the new one is ready nothing is loaded.
-    loaded = false;
-    currentModelName = modelName;
-    currentDevice = device;
-
-    await request<void>({ type: 'load', model: modelName, device, dtype }, onProgress);
-    loaded = true;
-}
-
-export function isModelLoaded(): boolean {
-    return loaded;
-}
-
-export function getCurrentDevice(): Device {
-    return currentDevice;
-}
-
-export function getCurrentModelName(): string {
-    return currentModelName;
-}
-
-/**
- * Releases the current pipeline (and its WebGPU/WASM buffers).
- */
-export async function disposeTranscriber(): Promise<void> {
-    loaded = false;
-    if (!worker) return;
-    try {
-        await request<void>({ type: 'dispose' });
-    } catch (err) {
-        console.warn('[Transcribe] dispose failed:', err);
-    }
-}
-
-/**
- * Transcribes a 16kHz Float32Array audio buffer (decoded in the worker, one job at a time).
- */
-export function transcribeAudio(audioData: Float32Array, chunkSize: number = 30): Promise<string> {
-    if (!loaded) {
-        return Promise.reject(new Error("Transcriber model not loaded"));
-    }
-
-    if (!audioData || audioData.length < 16000 * 0.15) {
-        return Promise.resolve(''); // Skip audio shorter than 150ms to prevent hallucinations
-    }
-
-    // Send a copy: the buffer is transferred (not cloned) to the worker, and callers such as the
-    // diagnostics harness reuse the same recording for many runs.
-    const pcm = audioData.slice();
-    return request<string>({ type: 'transcribe', pcm, chunkSize }, undefined, [pcm.buffer]);
-}
+): Promise<void> => defaultClient.loadModel(modelName, device, dtype, onProgress);
+export const isModelLoaded = (): boolean => defaultClient.isModelLoaded();
+export const getCurrentDevice = (): Device => defaultClient.getCurrentDevice();
+export const getCurrentModelName = (): string => defaultClient.getCurrentModelName();
+export const disposeTranscriber = (): Promise<void> => defaultClient.dispose();
+export const transcribeAudio = (audioData: Float32Array, chunkSize: number = 30): Promise<string> =>
+    defaultClient.transcribe(audioData, chunkSize);
 
 /**
  * Manages streaming background transcription for phrase-chunked audio during active recording.

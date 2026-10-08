@@ -38,6 +38,13 @@ whisper-tiny CPU 1308 / WebGPU 959 ms · whisper-base CPU 2729 / WebGPU 1368 ms 
 - Model downloads: resume from the partial file, Cancel button, backpressure, SHA-256 verification against Hugging Face's published checksum, visible error messages (verified against the real server: cancel -> resume from 69 MB -> checksum pass)
 - Text post-processing and model tables extracted from `src/main.ts` into `src/postprocess.ts` and `src/models.ts`, with tests
 
+**Third pass: setups, GPU recommendation, model research**
+- Hardware-based setups (Fast / Balanced / Precise) and per-model CPU-vs-GPU recommendation, with an in-app speed test (`src/setups.ts`, `src/speedtest.ts`); Processor now defaults to Auto. Settings redesigned: grouped cards, shorter wording, removed the Voice Activity and Chunk Size controls (no effect since streaming became the only mode)
+- **transformers.js 3.8.1 -> 4.3.1**: GPU decoding is much faster (Moonshine Base GPU 2.3 s -> 0.4-0.5 s; distil-small GPU 3.3 s -> 1.5-1.8 s); CPU speed unchanged
+- Cleanup model: Qwen3-4B-Instruct-2507 gave the best punctuation with 0% changed words at ~0.55-0.72 s (as fast as a 1B model); added to the catalog and used by Balanced/Precise
+- Decoder loops on truncated audio ("milk and milk and milk...") are now collapsed; quotation marks a model wraps around a phrase are stripped
+- Tested and **not adopted**: Parakeet CTC 0.6B (fast but unreliable through this runtime: empty output on one pass, dropped a sentence on another), Gemma 3 1B (rewrote 145-210% of words), Whisper large-v3-turbo (too heavy for dictation latency)
+
 **Packaged build** (installer 138 MB): click mode 0.82-0.84 s, push-to-talk 0.95 s (Moonshine Base + AI cleanup, 14 s clip).
 
 **Not done yet**

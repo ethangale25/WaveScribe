@@ -47,7 +47,9 @@ const ctx = await model.createContext({ contextSize: 4096 });
 const seq = ctx.getSequence();
 console.log('model:', modelPath.split(/[\\/]/).pop());
 
+const only = (process.env.PROMPTS || '').split(',').filter(Boolean);
 for (const [sname, system] of Object.entries(SYSTEMS)) {
+    if (only.length && !only.includes(sname)) continue;
     console.log(`\n##### prompt: ${sname}`);
     for (const [iname, text] of Object.entries(INPUTS)) {
         const t0 = performance.now();

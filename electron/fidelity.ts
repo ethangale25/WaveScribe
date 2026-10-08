@@ -37,3 +37,17 @@ export function isFaithfulCleanup(raw: string, cleaned: string): boolean {
     const maxEdits = wordCount <= 12 ? 2 : 1
     return ratio <= 0.15 || ratio * wordCount <= maxEdits
 }
+
+const QUOTE_PAIRS: Array<[string, string]> = [['"', '"'], ['“', '”'], ["'", "'"], ['‘', '’'], ['`', '`']]
+
+/** Removes quotation marks the model wrapped around its reply when the dictation had none. */
+export function stripAddedQuotes(raw: string, cleaned: string): string {
+    const text = cleaned.trim()
+    for (const [open, close] of QUOTE_PAIRS) {
+        if (text.length > 2 && text.startsWith(open) && text.endsWith(close)
+            && !raw.trim().startsWith(open) && !text.slice(1, -1).includes(open)) {
+            return text.slice(1, -1).trim()
+        }
+    }
+    return text
+}

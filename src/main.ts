@@ -1,5 +1,8 @@
 import './style.css'
 import { startRecording, stopRecordingDirect, decodeAudioBuffer, setAudioDevice, getVisualizerData, applyVAD } from './audio';
+import { getHardwareInfo, describeHardware } from './hardware-info';
+import { buildSetups, recommendDevice, SpeedSample, Setup } from './setups';
+import { runSpeedTest } from './speedtest';
 import { DEFAULT_MODEL_ID, MODEL_VRAM_MB, MODEL_DETAILS, isHfModelDownloaded } from './models';
 import { escapeHtml, removeFillers, applyDictionary, applyAutoFormatting, countWords } from './postprocess';
 import { loadModel, transcribeAudio, isModelLoaded, getCurrentDevice, StreamingTranscriptionSession } from './transcribe';
@@ -47,6 +50,7 @@ declare global {
       hideCursorSpinner: () => Promise<{ success: boolean }>
       getVramMb: () => Promise<number | null>
       getHardwareProfile: () => Promise<{
+        gpuName: string | null
         totalRamGb: number
         freeRamGb: number
         totalRamBytes: number
@@ -256,217 +260,175 @@ if (appElement) {
 
     <!-- Settings Modal Overlay -->
     <div class="modal-overlay" id="settings-modal">
-      <div class="modal-content">
+      <div class="modal-content settings-modal">
         <div class="modal-header">
           <h2>Settings</h2>
           <button class="btn-close" id="settings-close">×</button>
         </div>
-        
+
         <div class="modal-body">
-          <div class="metrics-dashboard" style="display: flex; gap: 8px; margin-bottom: 20px; text-align: center;">
-            <div class="metric-card" style="flex: 1; background: var(--bg-color); padding: 12px 4px; border-radius: 8px; border: 1px solid var(--border-color);">
-              <div style="font-size: 20px; font-weight: 700; color: var(--text-primary);" id="metric-dictations">0</div>
-              <div style="font-size: 10px; color: var(--text-secondary); text-transform: uppercase; margin-top: 4px; letter-spacing: 0.5px; line-height: 1.4;">Total<br>Dictations</div>
-            </div>
-            <div class="metric-card" style="flex: 1; background: var(--bg-color); padding: 12px 4px; border-radius: 8px; border: 1px solid var(--border-color);">
-              <div style="font-size: 20px; font-weight: 700; color: var(--text-primary);" id="metric-words">0</div>
-              <div style="font-size: 10px; color: var(--text-secondary); text-transform: uppercase; margin-top: 4px; letter-spacing: 0.5px; line-height: 1.4;">Total<br>Words</div>
-            </div>
-            <div class="metric-card" style="flex: 1; background: var(--bg-color); padding: 12px 4px; border-radius: 8px; border: 1px solid var(--border-color);">
-              <div style="font-size: 20px; font-weight: 700; color: var(--text-primary);" id="metric-time">0m</div>
-              <div style="font-size: 10px; color: var(--text-secondary); text-transform: uppercase; margin-top: 4px; letter-spacing: 0.5px; line-height: 1.4;">Time<br>Saved</div>
-            </div>
-            <div class="metric-card" style="flex: 1; background: var(--bg-color); padding: 12px 4px; border-radius: 8px; border: 1px solid var(--border-color);">
-              <div style="font-size: 20px; font-weight: 700; color: var(--text-primary);" id="metric-score">--</div>
-              <div style="font-size: 10px; color: var(--text-secondary); text-transform: uppercase; margin-top: 4px; letter-spacing: 0.5px; line-height: 1.4;">Articulation<br>Score</div>
-            </div>
-          </div>
-          <div class="settings-section">
-            <h3>Keyboard Shortcuts</h3>
-            <div class="form-group">
-              <label>Preset Shortcuts</label>
-              <select id="setting-hotkey-preset" style="width: 100%;">
-                <option value="CommandOrControl+Shift+Space">Ctrl/Cmd + Shift + Space</option>
-                <option value="Alt+Space">Alt + Space</option>
-                <option value="CommandOrControl+Alt+Space">Ctrl/Cmd + Alt + Space</option>
-                <option value="CommandOrControl+Shift+D">Ctrl/Cmd + Shift + D</option>
-                <option value="custom">Custom...</option>
-              </select>
-            </div>
-            <div class="form-group switch-group" style="margin-top: 12px;">
-              <label>Push-to-talk (hold the shortcut, release to finish)</label>
-              <label class="switch">
-                <input type="checkbox" id="setting-push-to-talk">
-                <span class="slider round"></span>
-              </label>
-            </div>
-            <div class="form-group" id="custom-hotkey-group" style="display: none; border-top: 1px solid var(--border-color); padding-top: 12px; margin-top: 12px;">
-              <label>Custom Shortcut</label>
-              <div style="display: flex; gap: 8px;">
-                <input type="text" id="setting-hotkey" value="CommandOrControl+Shift+Space" readonly class="hotkey-input" style="flex: 1;">
-                <button class="btn btn-secondary btn-small" id="setting-hotkey-record" style="flex-shrink: 0;">Record</button>
-              </div>
-              <small id="hotkey-warning" style="display: none; color: var(--red); margin-top: 5px;">Warning: This hotkey is used by another program (or invalid) and could not be registered.</small>
-              <small id="hotkey-help" style="display: block; margin-top: 5px;">Click 'Record' and press your desired shortcut combo.</small>
-            </div>
+          <div class="stat-row">
+            <div class="stat"><div class="stat-value" id="metric-dictations">0</div><div class="stat-label">Dictations</div></div>
+            <div class="stat"><div class="stat-value" id="metric-words">0</div><div class="stat-label">Words</div></div>
+            <div class="stat"><div class="stat-value" id="metric-time">0m</div><div class="stat-label">Time saved</div></div>
+            <div class="stat"><div class="stat-value" id="metric-score">--</div><div class="stat-label">Clarity</div></div>
           </div>
 
-          <div class="settings-section">
-            <h3>Transcription Model</h3>
-            <div class="form-group">
-              <label>Model Size (Accuracy vs Speed)</label>
-              <select id="setting-model">
-                <option value="onnx-community/moonshine-tiny-ONNX">Moonshine Tiny (⚡ Ultra Fast)</option>
-                <option value="onnx-community/moonshine-base-ONNX">Moonshine Base (⚡ Fast • Accurate)</option>
-                <option value="Xenova/whisper-tiny.en">Whisper Tiny (Fast)</option>
-                <option value="Xenova/whisper-base.en">Whisper Base (Balanced)</option>
-                <option value="Xenova/whisper-small.en">Whisper Small (Detailed)</option>
-                <option value="distil-whisper/distil-small.en">Distil Small (Fast Whisper)</option>
-                <option value="distil-whisper/distil-medium.en">Distil Medium (Balanced Whisper)</option>
-                <option value="distil-whisper/distil-large-v3">Distil Large (Accurate Whisper)</option>
-              </select>
+          <section class="s-section">
+            <div class="s-head">
+              <h3>Setup</h3>
+              <button class="s-link" id="btn-speed-test">Test my PC</button>
             </div>
-            <div id="model-status-card" style="margin-top: 10px; padding: 10px 12px; background: var(--bg-color); border: 1px solid var(--border-color); border-radius: 8px; font-size: 13px;">
-              <div style="display: flex; justify-content: space-between; align-items: center;">
-                <div style="display: flex; align-items: center; gap: 6px;">
-                  <div class="status-indicator" id="model-status-badge" style="width: 8px; height: 8px; margin-right: 0;"></div>
-                  <span id="model-status-text" style="font-weight: 500;">Checking cache...</span>
-                </div>
-                <span id="model-size-badge" style="color: var(--text-secondary); font-size: 11px; font-weight: 600;"></span>
-              </div>
-              <div id="settings-model-progress" style="display: none; margin-top: 8px;">
-                <div style="display: flex; justify-content: space-between; font-size: 11px; color: var(--text-secondary); margin-bottom: 4px;">
-                  <span id="settings-model-progress-text">Downloading...</span>
-                  <span id="settings-model-progress-pct" style="font-weight: 600; color: var(--text-primary);">0%</span>
-                </div>
-                <div class="progress-bar-track">
-                  <div id="settings-model-progress-fill" class="progress-bar-fill" style="width: 0%;"></div>
-                </div>
-              </div>
-              <button class="btn btn-secondary btn-small" id="btn-preload-model" style="display: none; width: 100%; margin-top: 8px;">Download Model for Offline Use</button>
-            </div>
-          </div>
+            <p class="s-sub" id="hw-summary">Checking your PC…</p>
+            <div class="setup-list" id="setup-cards"></div>
+            <p class="s-note" id="speed-test-result" style="display: none;"></p>
+          </section>
 
-          <div class="settings-section">
-            <h3>Performance</h3>
-            <div class="form-group switch-group">
-              <label>GPU Acceleration (WebGPU)</label>
-              <label class="switch">
-                <input type="checkbox" id="setting-compute-device">
-                <span class="slider round"></span>
-              </label>
-            </div>
-            <small style="display:block; color:var(--text-secondary); margin: -6px 0 10px 0;">Tip: Moonshine models are usually faster on CPU than on the GPU.</small>
-            <small id="webgpu-warning" style="display:none; color:var(--red); margin-top:-6px; margin-bottom:10px;">WebGPU is not available on this system. Falling back to CPU.</small>
-            <div class="form-group switch-group">
-              <label>Voice Activity Detection (trim silence)</label>
-              <label class="switch">
-                <input type="checkbox" id="setting-vad">
-                <span class="slider round"></span>
-              </label>
-            </div>
-            <div class="form-group">
-              <label>Processing Chunk Size: <span id="chunk-size-label">30s</span></label>
-              <input type="range" id="setting-chunk-size" min="10" max="30" step="5" value="30" style="width:100%; margin-top:6px;">
-              <div style="display:flex; justify-content:space-between; font-size:11px; color:var(--text-secondary); margin-top:3px;">
-                <span>10s (faster)</span><span>30s (default)</span>
+          <section class="s-section">
+            <h3>Shortcut</h3>
+            <div class="s-card">
+              <div class="s-row">
+                <span class="s-label">Shortcut</span>
+                <select id="setting-hotkey-preset" class="s-control">
+                  <option value="CommandOrControl+Shift+Space">Ctrl + Shift + Space</option>
+                  <option value="Alt+Space">Alt + Space</option>
+                  <option value="CommandOrControl+Alt+Space">Ctrl + Alt + Space</option>
+                  <option value="CommandOrControl+Shift+D">Ctrl + Shift + D</option>
+                  <option value="custom">Custom…</option>
+                </select>
+              </div>
+              <div class="s-row" id="custom-hotkey-group" style="display: none;">
+                <span class="s-label">Custom<span class="s-hint" id="hotkey-help">Click Record, then press your keys</span></span>
+                <span class="s-inline">
+                  <input type="text" id="setting-hotkey" value="CommandOrControl+Shift+Space" readonly class="hotkey-input s-input">
+                  <button class="btn btn-secondary btn-small" id="setting-hotkey-record">Record</button>
+                </span>
+              </div>
+              <small id="hotkey-warning" class="s-warn" style="display: none;">That shortcut is taken by another app.</small>
+              <div class="s-row">
+                <span class="s-label">Push to talk<span class="s-hint">Hold to dictate, release to finish</span></span>
+                <label class="switch"><input type="checkbox" id="setting-push-to-talk"><span class="slider round"></span></label>
               </div>
             </div>
-          </div>
+          </section>
 
-          <div class="settings-section">
-            <h3>Audio Input</h3>
-            <div class="form-group">
-              <label>Microphone</label>
-              <select id="setting-microphone">
-                <option value="default">Default Microphone</option>
-              </select>
-            </div>
-          </div>
-
-          <div class="settings-section">
-            <h3>Processing</h3>
-            <div class="form-group switch-group">
-              <label>Remove Filler Words (um, uh, like)</label>
-              <label class="switch">
-                <input type="checkbox" id="setting-filler-words" checked>
-                <span class="slider round"></span>
-              </label>
-            </div>
-            <div class="form-group switch-group">
-              <label>Auto-Capitalize First Letter</label>
-              <label class="switch">
-                <input type="checkbox" id="setting-capitalize" checked>
-                <span class="slider round"></span>
-              </label>
-            </div>
-            <div class="form-group switch-group">
-              <label>Auto-Punctuate</label>
-              <label class="switch">
-                <input type="checkbox" id="setting-punctuate" checked>
-                <span class="slider round"></span>
-              </label>
-            </div>
-          </div>
-
-          <div class="settings-section">
-            <h3>AI Text Cleanup</h3>
-            <p style="font-size: 13px; color: var(--text-secondary); margin-top: 0; margin-bottom: 12px;">Use a local AI model to fix grammar, punctuation, and speech-to-text errors. Runs entirely on your machine.</p>
-            <div class="form-group switch-group">
-              <label>Enable AI Reformatting</label>
-              <label class="switch">
-                <input type="checkbox" id="setting-ai-reformat">
-                <span class="slider round"></span>
-              </label>
-            </div>
-            <div id="ai-model-status" style="margin-top: 10px;">
-              <div style="display: flex; align-items: center; gap: 8px;">
-                <div class="status-indicator" id="ai-status-dot"></div>
-                <span id="ai-status-text" style="font-size: 13px; color: var(--text-secondary);">Model not downloaded</span>
+          <section class="s-section">
+            <h3>Speech</h3>
+            <div class="s-card">
+              <div class="s-row">
+                <span class="s-label">Model</span>
+                <select id="setting-model" class="s-control">
+                  <optgroup label="Fast">
+                    <option value="onnx-community/moonshine-tiny-ONNX">Moonshine Tiny</option>
+                    <option value="onnx-community/moonshine-base-ONNX">Moonshine Base</option>
+                  </optgroup>
+                  <optgroup label="Whisper">
+                    <option value="Xenova/whisper-tiny.en">Whisper Tiny</option>
+                    <option value="Xenova/whisper-base.en">Whisper Base</option>
+                    <option value="Xenova/whisper-small.en">Whisper Small</option>
+                  </optgroup>
+                  <optgroup label="Most accurate (needs a GPU)">
+                    <option value="distil-whisper/distil-small.en">Distil Small</option>
+                    <option value="distil-whisper/distil-medium.en">Distil Medium</option>
+                    <option value="distil-whisper/distil-large-v3">Distil Large</option>
+                  </optgroup>
+                </select>
               </div>
-              <div id="ai-progress-bar" style="display: none; margin-top: 8px; height: 6px; border-radius: 3px; background: rgba(128,128,128,0.2); overflow: hidden;">
-                <div id="ai-progress-fill" style="height: 100%; width: 0%; background: var(--btn-bg); border-radius: 3px; transition: width 0.3s ease;"></div>
+              <div class="s-row s-row-status" id="model-status-card">
+                <span class="s-status">
+                  <span class="status-indicator" id="model-status-badge" style="width: 8px; height: 8px; margin-right: 0;"></span>
+                  <span id="model-status-text">Checking…</span>
+                </span>
+                <span class="s-inline">
+                  <span class="s-hint-inline" id="model-size-badge"></span>
+                  <button class="btn btn-secondary btn-small" id="btn-preload-model" style="display: none;">Download</button>
+                </span>
               </div>
-              <button class="btn btn-secondary btn-small" id="ai-download-btn" style="margin-top: 8px; display: none; width: 100%;">Download Model (~1 GB)</button>
+              <div id="settings-model-progress" class="s-progress" style="display: none;">
+                <div class="s-progress-text"><span id="settings-model-progress-text">Downloading…</span><span id="settings-model-progress-pct">0%</span></div>
+                <div class="progress-bar-track"><div id="settings-model-progress-fill" class="progress-bar-fill" style="width: 0%;"></div></div>
+              </div>
+              <div class="s-row">
+                <span class="s-label">Processor<span class="s-hint" id="device-hint">&nbsp;</span></span>
+                <select id="setting-compute-device" class="s-control">
+                  <option value="auto">Auto</option>
+                  <option value="cpu">CPU</option>
+                  <option value="webgpu">GPU</option>
+                </select>
+              </div>
+              <div class="s-row">
+                <span class="s-label">Microphone</span>
+                <select id="setting-microphone" class="s-control"><option value="default">System default</option></select>
+              </div>
             </div>
-          </div>
+          </section>
 
-          <div class="settings-section">
-            <h3>Dictionary (Word Replacements)</h3>
-            <p style="font-size: 13px; color: var(--text-secondary); margin-top: 0; margin-bottom: 12px;">Replace misheard words automatically.</p>
-            <button class="btn btn-secondary" id="dict-manage-btn" style="width: 100%;">Manage Dictionary...</button>
-          </div>
-
-          <div class="settings-section">
-            <h3>App Behavior</h3>
-            <div class="form-group switch-group">
-              <label>Play Sounds on Record/Stop</label>
-              <label class="switch">
-                <input type="checkbox" id="setting-sounds" checked>
-                <span class="slider round"></span>
-              </label>
+          <section class="s-section">
+            <h3>Text</h3>
+            <div class="s-card">
+              <div class="s-row">
+                <span class="s-label">Remove filler words<span class="s-hint">um, uh, hmm</span></span>
+                <label class="switch"><input type="checkbox" id="setting-filler-words" checked><span class="slider round"></span></label>
+              </div>
+              <div class="s-row">
+                <span class="s-label">Capitalize sentences</span>
+                <label class="switch"><input type="checkbox" id="setting-capitalize" checked><span class="slider round"></span></label>
+              </div>
+              <div class="s-row">
+                <span class="s-label">End with a period</span>
+                <label class="switch"><input type="checkbox" id="setting-punctuate" checked><span class="slider round"></span></label>
+              </div>
+              <div class="s-row">
+                <span class="s-label">Custom words<span class="s-hint">Fix names and terms it mishears</span></span>
+                <button class="btn btn-secondary btn-small" id="dict-manage-btn">Edit</button>
+              </div>
+              <div class="s-row">
+                <span class="s-label">AI cleanup<span class="s-hint">Local model fixes punctuation. Nothing leaves your PC</span></span>
+                <label class="switch"><input type="checkbox" id="setting-ai-reformat"><span class="slider round"></span></label>
+              </div>
+              <div id="ai-model-status" class="s-row s-row-status">
+                <span class="s-status">
+                  <span class="status-indicator" id="ai-status-dot"></span>
+                  <span id="ai-status-text">Model not downloaded</span>
+                </span>
+                <button class="btn btn-secondary btn-small" id="ai-download-btn" style="display: none;">Download</button>
+              </div>
+              <div id="ai-progress-bar" class="s-progress" style="display: none;">
+                <div class="progress-bar-track"><div id="ai-progress-fill" class="progress-bar-fill" style="width: 0%;"></div></div>
+              </div>
             </div>
-            <div class="form-group switch-group">
-              <label>Show System Notifications</label>
-              <label class="switch">
-                <input type="checkbox" id="setting-notifications" checked>
-                <span class="slider round"></span>
-              </label>
-            </div>
-          </div>
+          </section>
 
-          <div class="settings-section">
-            <h3>Diagnostics</h3>
-            <p style="font-size: 13px; color: var(--text-secondary); margin-top: 0; margin-bottom: 12px;">Test every model / device / precision combination against one recording to find configs that fail or produce garbage.</p>
-            <button class="btn btn-secondary" id="diag-run-btn" style="width: 100%;">Run Configuration Test...</button>
-          </div>
+          <section class="s-section">
+            <h3>App</h3>
+            <div class="s-card">
+              <div class="s-row">
+                <span class="s-label">Play sounds</span>
+                <label class="switch"><input type="checkbox" id="setting-sounds" checked><span class="slider round"></span></label>
+              </div>
+              <div class="s-row">
+                <span class="s-label">Show notifications</span>
+                <label class="switch"><input type="checkbox" id="setting-notifications" checked><span class="slider round"></span></label>
+              </div>
+            </div>
+          </section>
+
+          <details class="s-adv">
+            <summary>Advanced</summary>
+            <div class="s-card">
+              <div class="s-row">
+                <span class="s-label">Compare every model and processor<span class="s-hint">Finds setups that fail on this PC</span></span>
+                <button class="btn btn-secondary btn-small" id="diag-run-btn">Run</button>
+              </div>
+            </div>
+          </details>
         </div>
 
         <div class="modal-footer">
-          <button class="btn btn-primary" id="settings-save">Save & Apply</button>
-        </div>
+          <button class="btn btn-primary" id="settings-save">Save</button>
         </div>
       </div>
+    </div>
 
     <!-- Dictionary Modal Overlay -->
     <div class="modal-overlay" id="dictionary-modal">
@@ -1255,11 +1217,7 @@ if (appElement) {
   const inputPushToTalk = document.getElementById('setting-push-to-talk') as HTMLInputElement;
 
   // Performance Input Elements
-  const inputComputeDevice = document.getElementById('setting-compute-device') as HTMLInputElement;
-  const inputVAD = document.getElementById('setting-vad') as HTMLInputElement;
-  const inputChunkSize = document.getElementById('setting-chunk-size') as HTMLInputElement;
-  const chunkSizeLabel = document.getElementById('chunk-size-label');
-  const webGPUWarning = document.getElementById('webgpu-warning');
+  const inputComputeDevice = document.getElementById('setting-compute-device') as HTMLSelectElement;
 
   // AI Reformatting UI Elements
   const inputAiReformat = document.getElementById('setting-ai-reformat') as HTMLInputElement;
@@ -1349,11 +1307,6 @@ if (appElement) {
     });
   }
 
-  // Live chunk size label update
-  inputChunkSize?.addEventListener('input', () => {
-    if (chunkSizeLabel) chunkSizeLabel.textContent = inputChunkSize.value + 's';
-  });
-
   const refreshSettingsModelStatus = async () => {
     const selectedModel = inputModel?.value || DEFAULT_MODEL_ID;
     const details = MODEL_DETAILS[selectedModel] || { name: selectedModel, shortName: selectedModel, sizeText: '~100 MB', approxBytes: 100 * 1024 * 1024 };
@@ -1419,9 +1372,11 @@ if (appElement) {
   // Refresh model status on device/model change
   inputComputeDevice?.addEventListener('change', () => {
     refreshSettingsModelStatus();
+    updateDeviceHint();
   });
   inputModel?.addEventListener('change', () => {
     refreshSettingsModelStatus();
+    updateDeviceHint();
   });
 
   // Dictionary UI Elements
@@ -1539,6 +1494,161 @@ if (appElement) {
     }
   };
 
+  // --- Setup recommendations, processor choice and speed test ---------------------------------
+
+  let speedSamples: SpeedSample[] = [];
+  const sampleFor = (id: string): SpeedSample | null => speedSamples.find(x => x.modelId === id) ?? null;
+  const deviceLabel = (d: string) => (d === 'webgpu' ? 'GPU' : 'CPU');
+
+  /** Turns the Processor choice (Auto / CPU / GPU) into the device that will actually be used. */
+  const resolveDevice = async (modelId: string, choice: string): Promise<'cpu' | 'webgpu'> => {
+    const hw = await getHardwareInfo();
+    if (choice === 'cpu') return 'cpu';
+    if (choice === 'webgpu') return hw.hasWebGpu ? 'webgpu' : 'cpu';
+    return recommendDevice(modelId, hw, sampleFor(modelId)).device;
+  };
+
+  const updateDeviceHint = async () => {
+    const hint = document.getElementById('device-hint');
+    if (!hint) return;
+    const hw = await getHardwareInfo();
+    const gpuOption = inputComputeDevice.querySelector('option[value="webgpu"]') as HTMLOptionElement | null;
+    if (gpuOption) gpuOption.disabled = !hw.hasWebGpu;
+
+    const rec = recommendDevice(inputModel.value, hw, sampleFor(inputModel.value));
+    const choice = inputComputeDevice.value;
+    if (choice === 'auto') hint.textContent = `Auto uses the ${deviceLabel(rec.device)}: ${rec.reason}`;
+    else if (choice === rec.device) hint.textContent = rec.reason;
+    else hint.textContent = `${deviceLabel(rec.device)} is recommended: ${rec.reason}`;
+  };
+
+  let setupDownloadButton: HTMLButtonElement | null = null;
+  window.electronAPI?.onLlmDownloadProgress((p: any) => {
+    if (setupDownloadButton) setupDownloadButton.textContent = p.phase === 'verifying' ? 'Verifying\u2026' : `Downloading ${p.percent}%`;
+  });
+
+  const showSetupNote = (text: string) => {
+    const note = document.getElementById('speed-test-result');
+    if (!note) return;
+    note.textContent = text;
+    note.style.display = text ? 'block' : 'none';
+  };
+
+  const applySetup = async (setup: Setup, button: HTMLButtonElement, llmSize: string | null, needsDownload: boolean) => {
+    if (!window.electronAPI || isRecording || isProcessing) return;
+    if (needsDownload && !confirm(`${setup.name} uses ${setup.llmModelName} for AI cleanup, a ${llmSize} download. Continue?`)) return;
+
+    button.disabled = true;
+    try {
+      await window.electronAPI.setSetting('model', setup.speechModel);
+      await window.electronAPI.setSetting('computeDevice', 'auto');
+      await window.electronAPI.setSetting('aiReformat', setup.aiCleanup);
+      // Mirror into the open form so pressing Save afterwards does not undo it.
+      inputModel.value = setup.speechModel;
+      inputComputeDevice.value = 'auto';
+      inputAiReformat.checked = setup.aiCleanup;
+
+      if (setup.aiCleanup && setup.llmModelId) {
+        if (needsDownload) {
+          setupDownloadButton = button;
+          button.textContent = 'Downloading\u2026';
+          const dl = await window.electronAPI.llmDownloadModel(setup.llmModelId);
+          setupDownloadButton = null;
+          if (!dl.success) throw new Error(dl.error || 'Download failed');
+        }
+        button.textContent = 'Loading\u2026';
+        await window.electronAPI.llmLoadModel(setup.llmModelId);
+      }
+
+      button.textContent = 'Loading\u2026';
+      const device = await resolveDevice(setup.speechModel, 'auto');
+      if (!isModelLoaded() || setup.speechModel !== currentModelId || device !== getCurrentDevice()) {
+        await attemptLoadModel(setup.speechModel);
+      }
+      showSetupNote('');
+    } catch (err: any) {
+      setupDownloadButton = null;
+      showSetupNote(`Could not apply ${setup.name}: ${err?.message || err}`);
+    } finally {
+      await updateAiStatusUI();
+      await refreshSettingsModelStatus();
+      await updateDeviceHint();
+      await renderSetupCards();
+    }
+  };
+
+  const renderSetupCards = async () => {
+    const host = document.getElementById('setup-cards');
+    const summary = document.getElementById('hw-summary');
+    if (!host) return;
+
+    const hw = await getHardwareInfo();
+    if (summary) summary.textContent = describeHardware(hw);
+
+    const plan = buildSetups(hw, speedSamples);
+    const settings = window.electronAPI ? await window.electronAPI.getSettings() : null;
+    const catalog: any[] = window.electronAPI ? await window.electronAPI.llmGetCatalog() : [];
+
+    host.innerHTML = '';
+    for (const setup of plan.setups) {
+      const llm = catalog.find(m => m.id === setup.llmModelId);
+      const needsDownload = setup.aiCleanup && !!llm && !llm.isDownloaded;
+      const isActive = settings?.model === setup.speechModel
+        && !!settings?.aiReformat === setup.aiCleanup
+        && (!setup.aiCleanup || !settings?.llmModelId || settings.llmModelId === setup.llmModelId);
+      const unavailable = setup.fit === 'unavailable';
+
+      const card = document.createElement('div');
+      card.className = 'setup-card' + (isActive ? ' is-active' : '') + (unavailable ? ' is-unavailable' : '');
+      const badge = isActive ? '<span class="badge badge-on">In use</span>'
+        : setup.id === plan.recommendedId ? '<span class="badge badge-rec">Recommended</span>' : '';
+      const meta = [
+        setup.speechModelName,
+        deviceLabel(setup.device),
+        setup.aiCleanup ? `AI: ${setup.llmModelName}` : 'No AI cleanup',
+      ].join(' \u00b7 ');
+      card.innerHTML = `
+        <div class="setup-top">
+          <span class="setup-name">${escapeHtml(setup.name)}</span>${badge}
+          <span class="setup-delay">${escapeHtml(setup.typicalDelay)}</span>
+        </div>
+        <div class="setup-tag">${escapeHtml(setup.tagline)}</div>
+        <div class="setup-meta">${escapeHtml(meta)}${needsDownload ? ` \u00b7 ${escapeHtml(llm.sizeText)} download` : ''}</div>
+        <div class="setup-foot">
+          <span class="setup-fit fit-${setup.fit}">${escapeHtml(setup.fitNote)}</span>
+          <button class="btn btn-small ${isActive ? 'btn-secondary' : 'btn-primary'} setup-apply" ${isActive || unavailable ? 'disabled' : ''}>${isActive ? 'In use' : 'Use'}</button>
+        </div>`;
+      const button = card.querySelector('.setup-apply') as HTMLButtonElement;
+      button.addEventListener('click', () => applySetup(setup, button, llm?.sizeText ?? null, needsDownload));
+      host.appendChild(card);
+    }
+  };
+
+  document.getElementById('btn-speed-test')?.addEventListener('click', async () => {
+    const button = document.getElementById('btn-speed-test') as HTMLButtonElement;
+    if (isRecording || isProcessing) return;
+    const modelId = inputModel.value;
+    const name = MODEL_DETAILS[modelId]?.name || modelId;
+    const hw = await getHardwareInfo();
+    if (!confirm(`Test ${name} on this PC? It takes about a minute and may download the model first. Please don't dictate meanwhile.`)) return;
+
+    button.disabled = true;
+    try {
+      const sample = await runSpeedTest(modelId, hw.hasWebGpu, showSetupNote);
+      speedSamples = [...speedSamples.filter(x => x.modelId !== modelId), sample];
+      await window.electronAPI?.setSetting('speedSamples', speedSamples);
+      const rec = recommendDevice(modelId, hw, sample);
+      const secs = (ms: number | null) => (ms === null ? 'n/a' : `${(ms / 1000).toFixed(2)} s`);
+      showSetupNote(`${name}: CPU ${secs(sample.cpuMs)} \u00b7 GPU ${hw.hasWebGpu ? secs(sample.gpuMs) : 'not available'}. ${rec.reason}.`);
+      await updateDeviceHint();
+      await renderSetupCards();
+    } catch (err: any) {
+      showSetupNote(`Test failed: ${err?.message || err}`);
+    } finally {
+      button.disabled = false;
+    }
+  });
+
   const loadSettingsAndShow = async () => {
     await populateMics();
     if (window.electronAPI) {
@@ -1575,13 +1685,9 @@ if (appElement) {
         if (settings.microphone) inputMicrophone.value = settings.microphone;
         if (settings.model) inputModel.value = settings.model;
 
-        // Performance settings
-        if (settings.computeDevice) inputComputeDevice.checked = settings.computeDevice === 'webgpu';
-        if (settings.vadEnabled !== undefined) inputVAD.checked = settings.vadEnabled;
-        if (settings.chunkSize !== undefined) {
-          inputChunkSize.value = String(settings.chunkSize);
-          if (chunkSizeLabel) chunkSizeLabel.textContent = settings.chunkSize + 's';
-        }
+        // Processor: new profiles default to Auto (the app picks CPU or GPU for the chosen model)
+        inputComputeDevice.value = settings.computeDevice ?? 'auto';
+        speedSamples = Array.isArray(settings.speedSamples) ? settings.speedSamples : [];
 
         // Checkboxes
         if (settings.removeFiller !== undefined) inputFiller.checked = settings.removeFiller;
@@ -1607,6 +1713,9 @@ if (appElement) {
     await updateAiStatusUI();
     await refreshSettingsModelStatus();
     settingsModal?.classList.add('active');
+    showSetupNote('');
+    await updateDeviceHint();
+    await renderSetupCards();
   };
 
   settingsBtn?.addEventListener('click', loadSettingsAndShow);
@@ -1747,13 +1856,10 @@ if (appElement) {
       showNotifyEnabled = inputNotify.checked;
       await window.electronAPI.setSetting('dictionaryPairs', dictionaryPairs);
 
-      // Performance settings
-      await window.electronAPI.setSetting('computeDevice', inputComputeDevice.checked ? 'webgpu' : 'cpu');
-      await window.electronAPI.setSetting('vadEnabled', inputVAD.checked);
-      await window.electronAPI.setSetting('chunkSize', parseInt(inputChunkSize.value) || 30);
+      await window.electronAPI.setSetting('computeDevice', inputComputeDevice.value);
 
       // Reload the speech model only if something that affects it changed (or it never loaded).
-      const newDevice = inputComputeDevice.checked ? 'webgpu' : 'cpu';
+      const newDevice = await resolveDevice(inputModel.value, inputComputeDevice.value);
       if (!isModelLoaded() || inputModel.value !== currentModelId || newDevice !== getCurrentDevice()) {
         attemptLoadModel(inputModel.value);
       }
@@ -1883,7 +1989,8 @@ if (appElement) {
     let dtype: string | undefined = undefined;
     if (window.electronAPI) {
       const s = await window.electronAPI.getSettings();
-      device = s?.computeDevice ?? 'cpu';
+      speedSamples = Array.isArray(s?.speedSamples) ? s.speedSamples : speedSamples;
+      device = await resolveDevice(modelId, s?.computeDevice ?? 'auto');
       // Automatically assign the optimal precision behind the scenes:
       // - WebGPU: 'auto' (fp32) for fast & accurate speech recognition
       // - CPU: undefined (pre-quantized q8 weights) for highest CPU performance
@@ -1999,9 +2106,8 @@ if (appElement) {
     } catch (err: any) {
       if (err?.code === 'WEBGPU_UNAVAILABLE') {
         console.warn('[Model] WebGPU not available, falling back to CPU');
-        if (webGPUWarning) webGPUWarning.style.display = 'block';
         if (window.electronAPI) await window.electronAPI.setSetting('computeDevice', 'cpu');
-        if (inputComputeDevice) inputComputeDevice.checked = false;
+        if (inputComputeDevice) inputComputeDevice.value = 'cpu';
         try {
           await loadModel(modelId, 'cpu', undefined, progressCallback);
           setModelReadyUI();
@@ -2012,7 +2118,7 @@ if (appElement) {
         console.warn('[Model] WebGPU OOM — falling back to CPU');
         statusMessage!.textContent = 'GPU out of memory — falling back to CPU';
         if (window.electronAPI) await window.electronAPI.setSetting('computeDevice', 'cpu');
-        if (inputComputeDevice) inputComputeDevice.checked = false;
+        if (inputComputeDevice) inputComputeDevice.value = 'cpu';
         try {
           await loadModel(modelId, 'cpu', undefined, progressCallback);
           setModelReadyUI();

@@ -5,7 +5,7 @@ import http from 'http'
 import crypto from 'crypto'
 import { app } from 'electron'
 import { detectHardware, HardwareProfile } from './hardware'
-import { isFaithfulCleanup } from './fidelity'
+import { isFaithfulCleanup, stripAddedQuotes } from './fidelity'
 
 export interface ModelMetadata {
     id: string
@@ -50,6 +50,20 @@ export const OPEN_MODELS: ModelMetadata[] = [
         url: 'https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct-GGUF/resolve/main/qwen2.5-1.5b-instruct-q4_k_m.gguf',
         tier: 'lightweight',
         description: 'Alibaba’s 1.5B model. Strong general chat, coding, and dictation cleanup.'
+    },
+    {
+        id: 'qwen3-4b-instruct',
+        name: 'Qwen3 4B Instruct',
+        parameters: '4B',
+        quant: 'Q4_K_M',
+        sizeText: '~2.4 GB',
+        approxBytes: 2380 * 1024 * 1024,
+        ramNeededText: '~3.5 GB RAM',
+        minTotalRamGb: 8,
+        filename: 'Qwen_Qwen3-4B-Instruct-2507-Q4_K_M.gguf',
+        url: 'https://huggingface.co/bartowski/Qwen_Qwen3-4B-Instruct-2507-GGUF/resolve/main/Qwen_Qwen3-4B-Instruct-2507-Q4_K_M.gguf',
+        tier: 'lightweight',
+        description: 'Best result in our dictation-cleanup tests: clean punctuation, no changed words, about as fast as a 1B model.'
     },
     {
         id: 'deepseek-r1-1.5b',
@@ -245,7 +259,7 @@ export interface ModelCatalogItem extends ModelMetadata {
     compatibilityReason: string
 }
 
-let activeModelId: string = 'qwen-2.5-1.5b'
+let activeModelId: string = 'qwen3-4b-instruct'
 let status: LlmStatus = 'not-downloaded'
 let activeDownloadModelId: string | null = null
 let downloadProgress = 0
@@ -652,7 +666,7 @@ async function reformatTextNow(rawText: string, surroundingContext?: string): Pr
             signal: abort.signal
         })
 
-        const cleaned = response.trim()
+        const cleaned = stripAddedQuotes(rawText, response)
 
         // Reject empty, runaway or visibly truncated output and keep the dictated text.
         if (!cleaned || cleaned.length < rawText.length * 0.6 || cleaned.length > rawText.length * 3) {

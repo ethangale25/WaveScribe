@@ -11,6 +11,7 @@ on your machine; no audio leaves it.
   almost immediately after you stop
 - **Live preview** of the decoded text in the status line / island while recording
 - **Local speech models**: Moonshine and (distil-)Whisper via transformers.js, CPU or WebGPU
+- **Three ready-made setups** (Fast, Balanced, Precise) picked for your PC's RAM, cores and GPU, and a **Test my PC** speed test that recommends CPU or GPU for the selected model (Processor: Auto)
 - **Optional AI cleanup**: a local LLM fixes punctuation and speech-to-text slips
 - **Local AI chat** with downloadable open models, sized to your hardware
 - Filler-word removal, dictionary replacements, auto-capitalization and punctuation

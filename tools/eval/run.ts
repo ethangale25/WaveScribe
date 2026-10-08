@@ -63,7 +63,7 @@ async function main() {
     console.log(`clip: ${clip} (${(audio.length / 16000).toFixed(1)}s)  model: ${modelId}`);
 
     const tLoad = Date.now();
-    await loadModel(modelId, 'cpu');
+    await loadModel(modelId, 'cpu', process.env.DTYPE || undefined);
     console.log(`model loaded in ${Date.now() - tLoad}ms`);
 
     // Warm-up so first-inference setup cost does not skew either measurement.

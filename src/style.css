@@ -2161,4 +2161,357 @@ body.mini-mode #island-dot {
 
 .diag-table-row:hover {
   background-color: rgba(128, 128, 128, 0.04);
-}
+}
+/* ===== Settings (compact cards and rows) ===== */
+.settings-modal {
+  max-width: 520px;
+}
+
+.settings-modal .modal-body {
+  padding: 16px 18px 6px;
+}
+
+.settings-modal .modal-footer {
+  padding: 12px 18px;
+}
+
+.settings-modal .modal-footer .btn {
+  min-width: 96px;
+}
+
+.stat-row {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 8px;
+  margin-bottom: 20px;
+}
+
+.stat {
+  background: var(--bg-color);
+  border: 1px solid rgba(128, 128, 128, 0.22);
+  border-radius: 10px;
+  padding: 10px 4px;
+  text-align: center;
+}
+
+.stat-value {
+  font-size: 18px;
+  font-weight: 700;
+  color: var(--text-primary);
+  font-variant-numeric: tabular-nums;
+}
+
+.stat-label {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--text-secondary);
+  margin-top: 2px;
+}
+
+.s-section {
+  margin-bottom: 20px;
+}
+
+.s-section h3 {
+  margin: 0 0 8px 2px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.8px;
+  text-transform: uppercase;
+  color: var(--text-secondary);
+}
+
+.s-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 2px;
+}
+
+.s-head h3 {
+  margin-bottom: 0;
+}
+
+.s-link {
+  background: none;
+  border: none;
+  color: var(--btn-bg);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  padding: 3px 8px;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: background 0.15s ease;
+}
+
+.s-link:hover:not(:disabled) {
+  background: var(--icon-btn-hover);
+}
+
+.s-link:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.s-sub {
+  margin: 0 2px 10px;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.s-note {
+  margin: 8px 2px 0;
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--text-secondary);
+}
+
+.s-card {
+  background: var(--bg-color);
+  border: 1px solid rgba(128, 128, 128, 0.22);
+  border-radius: 12px;
+  overflow: hidden;
+}
+
+.s-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 10px 14px;
+  min-height: 24px;
+}
+
+.s-card > * + * {
+  border-top: 1px solid rgba(128, 128, 128, 0.16);
+}
+
+.s-label {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-primary);
+  min-width: 0;
+}
+
+.s-hint {
+  font-size: 11px;
+  font-weight: 400;
+  line-height: 1.35;
+  color: var(--text-secondary);
+}
+
+.s-hint-inline {
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+
+.s-inline {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.s-control {
+  width: auto;
+  min-width: 150px;
+  max-width: 230px;
+  padding-right: 30px;
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'><path d='M1 1l4 4 4-4' fill='none' stroke='%238b949e' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/></svg>");
+  background-repeat: no-repeat;
+  background-position: right 11px center;
+}
+
+.s-input {
+  flex: none;
+  width: 150px;
+}
+
+.s-row-status {
+  padding: 7px 14px;
+  background: rgba(128, 128, 128, 0.06);
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.s-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.s-progress {
+  padding: 2px 14px 10px;
+  background: rgba(128, 128, 128, 0.06);
+}
+
+.s-progress-text {
+  display: flex;
+  justify-content: space-between;
+  margin-bottom: 4px;
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+
+.s-warn {
+  display: block;
+  padding: 6px 14px;
+  font-size: 11px;
+  color: var(--red);
+}
+
+.s-adv {
+  margin-bottom: 14px;
+}
+
+.s-adv summary {
+  cursor: pointer;
+  list-style: none;
+  margin: 0 2px 8px;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.s-adv summary::-webkit-details-marker {
+  display: none;
+}
+
+.s-adv summary::before {
+  content: '\203A';
+  display: inline-block;
+  margin-right: 6px;
+  transition: transform 0.15s ease;
+}
+
+.s-adv[open] summary::before {
+  transform: rotate(90deg);
+}
+
+/* Setup cards */
+.setup-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.setup-card {
+  background: var(--bg-color);
+  border: 1px solid rgba(128, 128, 128, 0.22);
+  border-radius: 12px;
+  padding: 12px 14px;
+  transition: border-color 0.2s ease, box-shadow 0.2s ease;
+}
+
+.setup-card:hover:not(.is-unavailable) {
+  border-color: rgba(128, 128, 128, 0.5);
+}
+
+.setup-card.is-active {
+  border-color: var(--btn-bg);
+  box-shadow: 0 0 0 1px var(--btn-bg) inset;
+}
+
+.setup-card.is-unavailable {
+  opacity: 0.6;
+}
+
+.setup-top {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.setup-name {
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+.setup-delay {
+  margin-left: auto;
+  font-size: 12px;
+  color: var(--text-secondary);
+  font-variant-numeric: tabular-nums;
+}
+
+.badge {
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.3px;
+}
+
+.badge-rec {
+  background: rgba(43, 85, 245, 0.15);
+  color: var(--btn-bg);
+}
+
+.badge-on {
+  background: rgba(34, 197, 94, 0.15);
+  color: #22c55e;
+}
+
+.setup-tag {
+  margin-top: 4px;
+  font-size: 12.5px;
+  color: var(--text-primary);
+}
+
+.setup-meta {
+  margin-top: 2px;
+  font-size: 11.5px;
+  color: var(--text-secondary);
+}
+
+.setup-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-top: 10px;
+}
+
+.setup-fit {
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+
+.setup-fit.fit-great {
+  color: #22c55e;
+}
+
+.setup-fit.fit-unavailable {
+  color: var(--yellow);
+}
+
+.setup-foot .btn {
+  min-width: 78px;
+}
+
+/* Settings buttons: compact, not the full-width pills used on the main screen */
+.settings-modal .btn {
+  width: auto;
+  padding: 7px 16px;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.settings-modal .btn-secondary {
+  border-radius: 8px;
+}
+
+.settings-modal .modal-footer .btn {
+  padding: 9px 30px;
+  font-size: 14px;
+}
+
+.settings-modal .setup-foot .btn,
+.settings-modal .s-row .btn {
+  border-radius: 8px;
+}

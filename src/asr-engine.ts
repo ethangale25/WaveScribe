@@ -4,6 +4,9 @@
 
 // @ts-ignore
 import { pipeline, env } from '@huggingface/transformers';
+import { cleanTranscribedText } from './asr-text';
+
+export { cleanTranscribedText };
 
 // Disable local models since we fetch from HF or cache
 env.allowLocalModels = false;
@@ -83,40 +86,6 @@ export async function disposeTranscriber(): Promise<void> {
         console.warn('[Transcribe] dispose failed:', err);
     }
     transcriber = null;
-}
-
-/**
- * Cleans Whisper/ASR artifacts, repetition loops, and video training set hallucinations.
- */
-export function cleanTranscribedText(rawString: string): string {
-    if (!rawString || typeof rawString !== 'string') return '';
-
-    let finalString = rawString.trim();
-
-    // Strip Whisper special bracket tokens like [BLANK_AUDIO], [Music], <|endoftext|>, etc.
-    finalString = finalString.replace(/\[.*?\]/g, '').replace(/<\|.*?\|>/g, '').trim();
-
-    // Collapse runaway bracket/paren loops
-    finalString = finalString.replace(/[\[\]{}()]{2,}/g, ' ').replace(/\s{2,}/g, ' ').trim();
-
-    // Detect degenerate repetition loops ("the the the the the")
-    const repWords = finalString.split(/\s+/).filter(w => w.length > 0);
-    if (repWords.length >= 4 && new Set(repWords.map(w => w.toLowerCase())).size === 1) {
-        return '';
-    }
-
-    // Filter known silence/noise hallucinations from video training sets
-    const lower = finalString.toLowerCase().replace(/[.,!?'"]/g, '').trim();
-    const SILENCE_HALLUCINATIONS = new Set([
-        '', 'thank you for watching', 'thanks for watching',
-        'amen', 'please subscribe', 'subscribe', 'subtitles by',
-        'watching', 'you', 'the',
-    ]);
-    if (SILENCE_HALLUCINATIONS.has(lower) && repWords.length <= 4) {
-        return '';
-    }
-
-    return finalString;
 }
 
 // All inference is funneled through one queue. Running several inferences against the same

@@ -139,3 +139,77 @@ test('postprocess: auto formatting capitalizes sentences and ends with punctuati
 test('postprocess: escapeHtml neutralizes markup', () => {
     assert.equal(escapeHtml('<img src=x onerror="a()">'), '&lt;img src=x onerror=&quot;a()&quot;&gt;');
 });
+
+import { cleanTranscribedText, collapseRepetitionLoops } from '../src/asr-text';
+import { stripAddedQuotes } from '../electron/fidelity';
+
+test('asr-text: collapses multi-word decoder loops seen from truncated audio', () => {
+    const looped = 'I went to the store this morning to buy some milk and milk and milk and milk and milk and milk and milk.';
+    const cleaned = cleanTranscribedText(looped);
+    assert.ok(cleaned.startsWith('I went to the store this morning to buy some milk'));
+    assert.ok(!/milk and milk and milk/.test(cleaned), cleaned);
+    assert.ok(cleaned.length < looped.length / 1.5);
+    assert.equal(collapseRepetitionLoops('When I got there, when I got there, when I got there, we left'), 'When I got there, we left');
+});
+
+test('asr-text: leaves normal repetition alone', () => {
+    assert.equal(collapseRepetitionLoops('it was very very good and very nice'), 'it was very very good and very nice');
+    assert.equal(cleanTranscribedText('[BLANK_AUDIO]'), '');
+    assert.equal(cleanTranscribedText('the the the the'), '');
+});
+
+test('fidelity: strips quotes the model added but keeps ones the speaker dictated', () => {
+    assert.equal(stripAddedQuotes('when I got there it was empty', '"When I got there it was empty."'), 'When I got there it was empty.');
+    assert.equal(stripAddedQuotes('"hello" he said', '"Hello" he said.'), '"Hello" he said.');
+    assert.equal(stripAddedQuotes('plain text', 'Plain text.'), 'Plain text.');
+});
+
+// --- hardware-based recommendations ---
+import { buildSetups, recommendDevice, modelFamily, HardwareInfo } from '../src/setups';
+
+const STRONG: HardwareInfo = { totalRamGb: 32, cpuCores: 16, gpuVramMb: 16000, hasWebGpu: true, gpuName: 'RTX 4090' };
+const MID: HardwareInfo = { totalRamGb: 16, cpuCores: 8, gpuVramMb: null, hasWebGpu: true };
+const WEAK: HardwareInfo = { totalRamGb: 4, cpuCores: 2, gpuVramMb: null, hasWebGpu: false };
+
+test('setups: always offers fast, balanced and precise', () => {
+    for (const hw of [STRONG, MID, WEAK]) {
+        assert.deepEqual(buildSetups(hw).setups.map(s => s.id), ['fast', 'balanced', 'precise']);
+    }
+});
+
+test('setups: weak PC is steered to Fast, with no AI model and Precise unavailable', () => {
+    const plan = buildSetups(WEAK);
+    assert.equal(plan.recommendedId, 'fast');
+    const byId = Object.fromEntries(plan.setups.map(s => [s.id, s]));
+    assert.equal(byId.precise.fit, 'unavailable');
+    assert.equal(byId.fast.aiCleanup, false);
+    assert.equal(byId.balanced.aiCleanup, false); // < 6 GB RAM
+});
+
+test('setups: capable PC gets Balanced recommended and every setup usable', () => {
+    for (const hw of [STRONG, MID]) {
+        const plan = buildSetups(hw);
+        assert.equal(plan.recommendedId, 'balanced');
+        assert.ok(plan.setups.every(s => s.fit !== 'unavailable'));
+    }
+    const strong = buildSetups(STRONG).setups.find(s => s.id === 'precise')!;
+    assert.equal(strong.device, 'webgpu');
+    assert.equal(strong.llmModelId, 'qwen3-4b-instruct');
+});
+
+test('device: moonshine prefers CPU, whisper prefers GPU when it fits, no GPU means CPU', () => {
+    assert.equal(recommendDevice('onnx-community/moonshine-base-ONNX', STRONG).device, 'cpu');
+    assert.equal(recommendDevice('Xenova/whisper-base.en', STRONG).device, 'webgpu');
+    assert.equal(recommendDevice('Xenova/whisper-base.en', WEAK).device, 'cpu');
+    assert.equal(recommendDevice('distil-whisper/distil-large-v3', { ...STRONG, gpuVramMb: 2000 }).device, 'cpu'); // too big for 2 GB
+    assert.equal(modelFamily('distil-whisper/distil-small.en'), 'distil');
+});
+
+test('device: a measurement on this PC overrides the rule of thumb, with a margin before choosing GPU', () => {
+    const id = 'onnx-community/moonshine-base-ONNX';
+    assert.equal(recommendDevice(id, STRONG, { modelId: id, cpuMs: 1000, gpuMs: 400 }).device, 'webgpu');
+    assert.equal(recommendDevice(id, STRONG, { modelId: id, cpuMs: 400, gpuMs: 380 }).device, 'cpu'); // not enough faster
+    const r = recommendDevice('Xenova/whisper-base.en', STRONG, { modelId: 'Xenova/whisper-base.en', cpuMs: 300, gpuMs: 900 });
+    assert.equal(r.device, 'cpu');
+    assert.ok(r.measured && /3\.0/.test(r.reason), r.reason);
+});

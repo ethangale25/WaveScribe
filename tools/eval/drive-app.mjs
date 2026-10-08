@@ -32,7 +32,12 @@ const modelFlag = flag('model');
 const repeat = parseInt(flag('repeat') || '1', 10);
 const ptt = process.argv.includes('--ptt'); // hold Ctrl+Shift+Space with real key events instead of clicking
 const deviceFlag = flag('device') || 'cpu';
-const tempProfile = fs.mkdtempSync(path.join(os.tmpdir(), 'wavescribe-eval-'));
+// One fixed throw-away profile, reused between runs so downloaded speech models stay cached
+// (a fresh folder every time meant re-downloading the model on every run). Settings are rewritten
+// each run, and your real profile is never touched.
+const tempProfile = path.join(os.tmpdir(), 'wavescribe-eval-profile');
+fs.mkdirSync(tempProfile, { recursive: true });
+try { fs.unlinkSync(path.join(tempProfile, 'models')); } catch { }
 if (modelFlag) {
     fs.writeFileSync(path.join(tempProfile, 'config.json'), JSON.stringify({
         model: modelFlag, computeDevice: deviceFlag, aiReformat: flag('ai') === '1', vadEnabled: true, playSounds: false, showNotify: false, pushToTalk: ptt,
@@ -95,7 +100,7 @@ function done(code) {
     setTimeout(() => {
         // Remove the junction first so deleting the temp profile can never touch the real models.
         try { fs.unlinkSync(path.join(tempProfile, 'models')); } catch { }
-        try { fs.rmSync(tempProfile, { recursive: true, force: true }); } catch { }
+        // (the profile is kept on purpose: it holds the cached speech models)
         process.exit(code);
     }, 1500);
 }

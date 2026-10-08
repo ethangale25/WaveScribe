@@ -4,3 +4,5 @@ dist-electron/
 release/
 *.log
 .claude/settings.local.json
+tools/eval/run.mjs
+tools/eval/data/

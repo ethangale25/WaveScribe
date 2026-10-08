@@ -1167,14 +1167,23 @@ if (appElement) {
       }
 
       try {
-        activeStreamingSession = new StreamingTranscriptionSession();
+        const session = new StreamingTranscriptionSession();
+        activeStreamingSession = session;
+
+        // Live preview: show the tail of what has been transcribed so far while the user talks.
+        session.setOnUpdate((partial) => {
+          if (!isRecording || !partial) return;
+          const tail = partial.length > 26 ? '…' + partial.slice(-25) : partial;
+          if (statusMessage) statusMessage.textContent = tail;
+          const islandTextLive = document.getElementById('island-text');
+          if (islandTextLive) islandTextLive.textContent = tail;
+        });
+
         await startRecording({
           enableStreaming: true,
-          onPhraseCompleted: (pcmChunk) => {
-            if (activeStreamingSession) {
-              const chunkId = activeStreamingSession.addPhraseChunk(pcmChunk);
-              console.log(`[Audio Streaming] Dispatched phrase #${chunkId} during speech`);
-            }
+          onPhraseCompleted: (pcmChunk, meta) => {
+            const chunkId = session.addPhraseChunk(pcmChunk, meta);
+            console.log(`[Audio Streaming] Dispatched phrase #${chunkId} during speech`);
           }
         });
         isRecording = true;
@@ -2694,9 +2703,9 @@ if (appElement) {
         chatStreamingSession = new StreamingTranscriptionSession();
         await startRecording({
           enableStreaming: true,
-          onPhraseCompleted: (pcmChunk) => {
+          onPhraseCompleted: (pcmChunk, meta) => {
             if (chatStreamingSession) {
-              chatStreamingSession.addPhraseChunk(pcmChunk);
+              chatStreamingSession.addPhraseChunk(pcmChunk, meta);
             }
           }
         });

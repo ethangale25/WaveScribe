@@ -1,5 +1,8 @@
 // @ts-ignore
 import { pipeline, env } from '@huggingface/transformers';
+import { stitchSegments, TranscribedSegment } from './stitch';
+import { MIN_PHRASE_SAMPLES } from './dsp';
+import type { PhraseMeta } from './segmenter';
 
 // Disable local models since we fetch from HF or cache
 env.allowLocalModels = false;
@@ -168,70 +171,79 @@ export function transcribeAudio(audioData: Float32Array, chunkSize: number = 30)
 
 /**
  * Manages streaming background transcription for phrase-chunked audio during active recording.
+ * Phrases are transcribed (one at a time) while the user is still talking; when recording stops
+ * only the final fragment is left to decode, and the pieces are stitched into one coherent text.
  */
 export class StreamingTranscriptionSession {
-    private chunkPromises: Array<{ id: number; promise: Promise<string>; text?: string }> = [];
+    private chunks: Array<{ id: number; promise: Promise<TranscribedSegment>; segment?: TranscribedSegment }> = [];
     private nextId = 0;
     private isFinalized = false;
     private lastError: unknown = null;
+    private onUpdate: ((partialText: string) => void) | null = null;
+
+    /** Called with the text so far each time another phrase finishes decoding. */
+    public setOnUpdate(cb: ((partialText: string) => void) | null): void {
+        this.onUpdate = cb;
+    }
 
     /**
-     * Dispatches a completed phrase chunk to the background transcriber immediately.
+     * Dispatches a completed phrase to the background transcriber immediately.
      */
-    public addPhraseChunk(pcmChunk: Float32Array): number {
+    public addPhraseChunk(pcmChunk: Float32Array, meta: PhraseMeta = { forcedCut: false }): number {
         if (this.isFinalized) return -1;
         const chunkId = this.nextId++;
 
-        const promise = (async () => {
+        const promise: Promise<TranscribedSegment> = (async () => {
             try {
                 const text = await transcribeAudio(pcmChunk, 30);
-                return text;
+                return { text, forcedCut: meta.forcedCut };
             } catch (err) {
                 console.warn(`[StreamingSession] Error transcribing chunk #${chunkId}:`, err);
                 this.lastError = err;
-                return '';
+                return { text: '', forcedCut: meta.forcedCut };
             }
         })();
 
-        const entry = { id: chunkId, promise, text: undefined as string | undefined };
-        promise.then(t => { entry.text = t; });
-        this.chunkPromises.push(entry);
+        const entry: { id: number; promise: Promise<TranscribedSegment>; segment?: TranscribedSegment } = { id: chunkId, promise };
+        promise.then(seg => {
+            entry.segment = seg;
+            if (this.onUpdate && !this.isFinalized) {
+                try { this.onUpdate(this.getPartialText()); } catch { /* UI callback must not break decoding */ }
+            }
+        });
+        this.chunks.push(entry);
 
         return chunkId;
     }
 
     /**
-     * Checks if any chunks have finished and returns the joined partial text.
+     * Stitched text of every phrase decoded so far (in order, stopping at the first one still pending).
      */
     public getPartialText(): string {
-        return this.chunkPromises
-            .map(c => c.text ?? '')
-            .filter(t => t.trim().length > 0)
-            .join(' ')
-            .trim();
+        const done: TranscribedSegment[] = [];
+        for (const c of this.chunks) {
+            if (!c.segment) break;
+            done.push(c.segment);
+        }
+        return stitchSegments(done);
     }
 
     /**
-     * Finalizes the session by transcribing any trailing audio fragment and resolving all pending phrases.
+     * Finalizes the session by transcribing any trailing audio fragment and stitching all phrases.
      */
     public async finalize(trailingPcm?: Float32Array): Promise<string> {
+        // Dispatch the tail BEFORE marking the session finalized so addPhraseChunk accepts it.
+        if (trailingPcm && trailingPcm.length >= MIN_PHRASE_SAMPLES) {
+            this.addPhraseChunk(trailingPcm, { forcedCut: false });
+        }
         this.isFinalized = true;
 
-        if (trailingPcm && trailingPcm.length >= 16000 * 0.2) {
-            this.addPhraseChunk(trailingPcm);
-        }
-
-        if (this.chunkPromises.length === 0) {
+        if (this.chunks.length === 0) {
             return '';
         }
 
-        const results = await Promise.all(this.chunkPromises.map(c => c.promise));
-        const assembled = results
-            .map(r => r.trim())
-            .filter(r => r.length > 0)
-            .join(' ')
-            .replace(/\s{2,}/g, ' ')
-            .trim();
+        const segments = await Promise.all(this.chunks.map(c => c.promise));
+        const assembled = stitchSegments(segments);
 
         // If every chunk failed, surface the error instead of reporting an empty dictation.
         if (!assembled && this.lastError) {

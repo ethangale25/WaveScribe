@@ -39,7 +39,7 @@ const deviceFlag = flag('device') || 'cpu';
 // each run, and your real profile is never touched.
 const tempProfile = path.join(os.tmpdir(), 'wavescribe-eval-profile');
 fs.mkdirSync(tempProfile, { recursive: true });
-try { fs.unlinkSync(path.join(tempProfile, 'models')); } catch { }
+try { fs.rmdirSync(path.join(tempProfile, 'models')); } catch { }
 if (modelFlag) {
     fs.writeFileSync(path.join(tempProfile, 'config.json'), JSON.stringify({
         model: modelFlag, computeDevice: deviceFlag, aiReformat: flag('ai') === '1', vadEnabled: true, playSounds: false, showNotify: false, pushToTalk: ptt, cpuThreads: threadsFlag,
@@ -102,7 +102,7 @@ function done(code) {
     try { proc.kill(); } catch { }
     setTimeout(() => {
         // Remove the junction first so deleting the temp profile can never touch the real models.
-        try { fs.unlinkSync(path.join(tempProfile, 'models')); } catch { }
+        try { fs.rmdirSync(path.join(tempProfile, 'models')); } catch { }
         // (the profile is kept on purpose: it holds the cached speech models)
         process.exit(code);
     }, 1500);

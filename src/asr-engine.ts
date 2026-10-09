@@ -58,7 +58,9 @@ export async function loadModel(
     // CPU decoding runs on WebAssembly; more threads make it faster, but only if the page can use
     // SharedArrayBuffer (otherwise ONNX Runtime silently falls back to one thread).
     const wasm = env.backends?.onnx?.wasm;
-    if (wasm && threads && threads > 0) wasm.numThreads = threads;
+    // Always explicit: left unset, ONNX Runtime picks a large pool once threads are available, which
+    // made GPU decoding of Whisper 2x slower (the helper operations wait on too many threads).
+    if (wasm) wasm.numThreads = threads && threads > 0 ? threads : 1;
     console.log(`[ASR] ${modelName} on ${device}; wasm threads=${wasm?.numThreads}; SharedArrayBuffer=${typeof SharedArrayBuffer}; isolated=${(globalThis as any).crossOriginIsolated}`);
 
     const pipelineOptions: any = {

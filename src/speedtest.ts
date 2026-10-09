@@ -1,9 +1,9 @@
 // Measures how fast a speech model decodes on this PC, on the CPU and on the GPU, so the app can
-// recommend the faster one. Runs in throw-away workers, so the model used for dictation is never
-// unloaded or disturbed.
+// recommend the faster one (and the best number of CPU threads). Runs in throw-away workers, so the
+// model used for dictation is never unloaded or disturbed.
 
 import { AsrClient, Device } from './transcribe';
-import type { SpeedSample } from './setups';
+import { cpuThreadCandidates, SpeedSample } from './setups';
 // @ts-ignore
 import sampleUrl from '../sounds/speedtest.wav';
 
@@ -38,16 +38,24 @@ function median(values: number[]): number {
     return sorted[Math.floor(sorted.length / 2)];
 }
 
-async function measureDevice(modelId: string, device: Device, audio: Float32Array, onStatus: (text: string) => void): Promise<number> {
+async function measureDevice(
+    modelId: string,
+    device: Device,
+    audio: Float32Array,
+    onStatus: (text: string) => void,
+    threads?: number,
+    runs = 5
+): Promise<number> {
     const client = new AsrClient();
+    const label = device === 'webgpu' ? 'GPU' : `CPU, ${threads} thread${threads === 1 ? '' : 's'}`;
     try {
-        onStatus(`Loading on ${device === 'webgpu' ? 'GPU' : 'CPU'}…`);
-        await client.loadModel(modelId, device);
+        onStatus(`Loading (${label})…`);
+        await client.loadModel(modelId, device, undefined, undefined, threads);
         await client.transcribe(audio); // warm-up: the first run includes one-time setup
 
         const times: number[] = [];
-        for (let i = 0; i < 5; i++) {
-            onStatus(`Testing ${device === 'webgpu' ? 'GPU' : 'CPU'} (${i + 1}/5)…`);
+        for (let i = 0; i < runs; i++) {
+            onStatus(`Testing (${label}) ${i + 1}/${runs}…`);
             const t0 = performance.now();
             await client.transcribe(audio);
             times.push(performance.now() - t0);
@@ -60,16 +68,25 @@ async function measureDevice(modelId: string, device: Device, audio: Float32Arra
 
 /**
  * Decodes the built-in sample on each available device and returns the median time per device.
- * A device that fails to run (e.g. the GPU is out of memory) is reported as null, not as an error.
+ * On the CPU several thread counts are tried and the quickest is reported (more threads are not
+ * always faster: slow efficiency cores can hold the rest up). A device that fails to run (e.g. the
+ * GPU is out of memory) is reported as null, not as an error.
  */
 export async function runSpeedTest(
     modelId: string,
     hasWebGpu: boolean,
+    cpuCores: number,
     onStatus: (text: string) => void = () => { }
 ): Promise<SpeedSample> {
     const audio = await loadSample();
 
-    const cpuMs = await measureDevice(modelId, 'cpu', audio, onStatus);
+    let cpuMs = Infinity;
+    let cpuThreads = 1;
+    for (const threads of cpuThreadCandidates(cpuCores)) {
+        const ms = await measureDevice(modelId, 'cpu', audio, onStatus, threads, 4);
+        if (ms < cpuMs) { cpuMs = ms; cpuThreads = threads; }
+    }
+
     let gpuMs: number | null = null;
     if (hasWebGpu) {
         try {
@@ -78,5 +95,31 @@ export async function runSpeedTest(
             console.warn('[SpeedTest] GPU run failed:', err);
         }
     }
-    return { modelId, cpuMs, gpuMs };
+    return { modelId, cpuMs, gpuMs, cpuThreads };
+}
+
+/**
+ * Developer benchmark: decodes the sample repeatedly on the CPU at each thread count and returns
+ * every run's time in ms, so run-to-run spread is visible (exposed as window.__wavescribe).
+ */
+export async function benchCpuThreads(modelId: string, threadCounts: number[], runs = 8): Promise<Record<number, number[]>> {
+    const audio = await loadSample();
+    const result: Record<number, number[]> = {};
+    for (const threads of threadCounts) {
+        const client = new AsrClient();
+        try {
+            await client.loadModel(modelId, 'cpu', undefined, undefined, threads);
+            await client.transcribe(audio); // warm-up
+            const times: number[] = [];
+            for (let i = 0; i < runs; i++) {
+                const t0 = performance.now();
+                await client.transcribe(audio);
+                times.push(Math.round(performance.now() - t0));
+            }
+            result[threads] = times;
+        } finally {
+            client.terminate();
+        }
+    }
+    return result;
 }

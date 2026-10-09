@@ -26,7 +26,7 @@ const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 // each run, and your real profile is never touched.
 const tempProfile = path.join(os.tmpdir(), 'wavescribe-eval-profile');
 fs.mkdirSync(tempProfile, { recursive: true });
-try { fs.unlinkSync(path.join(tempProfile, 'models')); } catch { }
+try { fs.rmdirSync(path.join(tempProfile, 'models')); } catch { }
 const realProfile = path.join(process.env.APPDATA || '', 'wavescribe');
 const config = JSON.parse(fs.readFileSync(path.join(realProfile, 'config.json'), 'utf-8'));
 delete config.dictationHistory;
@@ -38,7 +38,7 @@ const proc = spawn(electronPath, ['.', `--user-data-dir=${tempProfile}`, `--remo
 function done(code) {
     try { proc.kill(); } catch { }
     setTimeout(() => {
-        try { fs.unlinkSync(path.join(tempProfile, 'models')); } catch { }
+        try { fs.rmdirSync(path.join(tempProfile, 'models')); } catch { }
         // (the profile is kept on purpose: it holds the cached speech models)
         process.exit(code);
     }, 1500);

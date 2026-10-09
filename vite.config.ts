@@ -1,8 +1,21 @@
 import { defineConfig } from 'vite'
 import electron from 'vite-plugin-electron/simple'
 
+// ONNX Runtime's WebAssembly binary gets bundled automatically, but the app serves its own copy from
+// public/ort (needed for multi-threading), so the bundled duplicate is dropped (25 MB smaller).
+const dropBundledOrtWasm = {
+  name: 'drop-bundled-ort-wasm',
+  apply: 'build' as const,
+  generateBundle(_options: unknown, bundle: Record<string, unknown>) {
+    for (const file of Object.keys(bundle)) {
+      if (/assets\/ort-wasm-simd-threaded.*\.wasm$/.test(file)) delete bundle[file]
+    }
+  },
+}
+
 export default defineConfig({
   plugins: [
+    dropBundledOrtWasm,
     electron({
       main: {
         entry: 'electron/main.ts',

@@ -1,8 +1,8 @@
 import './style.css'
 import { startRecording, stopRecordingDirect, decodeAudioBuffer, setAudioDevice, getVisualizerData, applyVAD } from './audio';
 import { getHardwareInfo, describeHardware } from './hardware-info';
-import { buildSetups, recommendDevice, SpeedSample, Setup } from './setups';
-import { runSpeedTest } from './speedtest';
+import { buildSetups, recommendDevice, defaultCpuThreads, SpeedSample, Setup } from './setups';
+import { runSpeedTest, benchCpuThreads } from './speedtest';
 import { DEFAULT_MODEL_ID, MODEL_VRAM_MB, MODEL_DETAILS, isHfModelDownloaded } from './models';
 import { escapeHtml, removeFillers, applyDictionary, applyAutoFormatting, countWords } from './postprocess';
 import { loadModel, transcribeAudio, isModelLoaded, getCurrentDevice, StreamingTranscriptionSession } from './transcribe';
@@ -104,6 +104,9 @@ declare global {
     }
   }
 }
+
+// Developer hook used by tools/eval to benchmark CPU thread counts.
+(window as any).__wavescribe = { benchCpuThreads };
 
 // Check if electron API is injected
 if (!window.electronAPI) {
@@ -1634,12 +1637,19 @@ if (appElement) {
 
     button.disabled = true;
     try {
-      const sample = await runSpeedTest(modelId, hw.hasWebGpu, showSetupNote);
+      const sample = await runSpeedTest(modelId, hw.hasWebGpu, hw.cpuCores, showSetupNote);
       speedSamples = [...speedSamples.filter(x => x.modelId !== modelId), sample];
       await window.electronAPI?.setSetting('speedSamples', speedSamples);
+      if (sample.cpuThreads) {
+        await window.electronAPI?.setSetting('cpuThreads', sample.cpuThreads);
+        // Apply right away if the model in use runs on the CPU with a different thread count.
+        if (getCurrentDevice() === 'cpu' && loadedCpuThreads !== sample.cpuThreads && !isRecording && !isProcessing) {
+          attemptLoadModel(currentModelId);
+        }
+      }
       const rec = recommendDevice(modelId, hw, sample);
       const secs = (ms: number | null) => (ms === null ? 'n/a' : `${(ms / 1000).toFixed(2)} s`);
-      showSetupNote(`${name}: CPU ${secs(sample.cpuMs)} \u00b7 GPU ${hw.hasWebGpu ? secs(sample.gpuMs) : 'not available'}. ${rec.reason}.`);
+      showSetupNote(`${name}: CPU ${secs(sample.cpuMs)}${sample.cpuThreads ? ` (${sample.cpuThreads} threads)` : ''} \u00b7 GPU ${hw.hasWebGpu ? secs(sample.gpuMs) : 'not available'}. ${rec.reason}.`);
       await updateDeviceHint();
       await renderSetupCards();
     } catch (err: any) {
@@ -1923,6 +1933,7 @@ if (appElement) {
 
   // ── Model loading ──────────────────────────────────────────────────────────
   let currentModelId = DEFAULT_MODEL_ID;
+  let loadedCpuThreads: number | undefined;
 
   const modelErrorActions = document.getElementById('model-error-actions');
   const modelRetryBtn = document.getElementById('model-retry-btn');
@@ -1992,7 +2003,11 @@ if (appElement) {
       const s = await window.electronAPI.getSettings();
       speedSamples = Array.isArray(s?.speedSamples) ? s.speedSamples : speedSamples;
       device = await resolveDevice(modelId, s?.computeDevice ?? 'auto');
-      if (typeof s?.cpuThreads === 'number') threads = s.cpuThreads;
+      // Tuned thread count applies to CPU decoding only; the GPU path stays at one helper thread.
+      if (device === 'cpu') {
+        threads = typeof s?.cpuThreads === 'number' ? s.cpuThreads : defaultCpuThreads((await getHardwareInfo()).cpuCores);
+      }
+      loadedCpuThreads = device === 'cpu' ? threads : undefined;
       // Automatically assign the optimal precision behind the scenes:
       // - WebGPU: 'auto' (fp32) for fast & accurate speech recognition
       // - CPU: undefined (pre-quantized q8 weights) for highest CPU performance

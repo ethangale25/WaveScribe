@@ -1,12 +1,12 @@
 // Chooses speech-model / device / AI-cleanup setups that suit the detected hardware.
 // Pure logic (no DOM, no Electron) so it can be unit tested.
 //
-// The rules encode measurements taken in the real app with transformers.js 4.3.1
-// (14 s clip, stop -> text, RTX 4090 laptop / 32 cores):
-//   Moonshine tiny / base : CPU 0.2 s / 0.4 s       GPU 0.2 s / 0.4-0.5 s -> equal; CPU is lower risk
-//   Whisper tiny / base   : CPU 1.3 s / 2.7 s       GPU 0.9 s / 1.2 s     -> GPU helps
-//   Distil-small          : CPU ~21 s               GPU 1.5-1.8 s         -> unusable without a GPU
-// (CPU figures for the larger Whisper models were measured on transformers.js 3.8.1.)
+// The rules encode measurements taken in the real app with transformers.js 4.3.1 on a 32-thread
+// hybrid CPU + RTX 4090 laptop (14 s clip, tail decode; CPU with 4 WebAssembly threads):
+//   Moonshine tiny / base : CPU 0.2 s / 0.2 s       GPU 0.2 s / 0.4 s     -> CPU
+//   Whisper tiny / base   : CPU ~1.2 s / ~1.1 s     GPU 0.9-2.1 s / 1.2-1.5 s -> about equal; CPU is lower risk
+//   Distil-small          : CPU 6.5-9 s (threads do not help)   GPU 1.5-1.8 s -> needs a GPU
+// Results vary by PC, which is why the in-app speed test can override these rules.
 
 import { MODEL_VRAM_MB } from './models';
 
@@ -27,6 +27,24 @@ export interface SpeedSample {
     modelId: string;
     cpuMs: number | null;
     gpuMs: number | null;
+    /** CPU thread count that gave the best time in the test. */
+    cpuThreads?: number | null;
+}
+
+// Measured on a 32-thread hybrid CPU (Whisper Base, 3 s clip): 1 thread 2.5 s, 2 -> 1.7 s,
+// 4 -> 1.1 s, 6 -> 1.0 s, but 8 -> 2.9 s and 12 -> 2.7 s. More threads than fast cores make the
+// slow cores hold everyone up, so the default stays modest and the speed test refines it.
+const MAX_CPU_THREADS = 6;
+
+/** Conservative default number of WebAssembly threads for CPU decoding. */
+export function defaultCpuThreads(logicalCores: number): number {
+    return Math.max(1, Math.min(4, Math.floor(logicalCores / 2)));
+}
+
+/** Thread counts worth trying in the speed test, never more than half the logical cores. */
+export function cpuThreadCandidates(logicalCores: number): number[] {
+    const limit = Math.max(1, Math.min(MAX_CPU_THREADS, Math.floor(logicalCores / 2)));
+    return Array.from(new Set([Math.min(2, limit), Math.min(4, limit), limit])).sort((a, b) => a - b);
 }
 
 export type ModelFamily = 'moonshine' | 'whisper' | 'distil';
@@ -68,7 +86,11 @@ export function recommendDevice(modelId: string, hw: HardwareInfo, sample?: Spee
 
     const family = modelFamily(modelId);
     if (family === 'moonshine') {
-        return { device: 'cpu', reason: 'Moonshine is just as fast on the CPU', measured: false };
+        return { device: 'cpu', reason: 'Moonshine is fastest on the CPU', measured: false };
+    }
+    // Small Whisper models decode as fast on a multi-threaded CPU as on the GPU, without needing GPU memory.
+    if (family === 'whisper' && /tiny|base/i.test(modelId)) {
+        return { device: 'cpu', reason: 'This model runs just as fast on the CPU', measured: false };
     }
 
     // Whisper-family models: the GPU helps, provided the model fits in its memory.

@@ -199,7 +199,9 @@ test('setups: capable PC gets Balanced recommended and every setup usable', () =
 
 test('device: moonshine prefers CPU, whisper prefers GPU when it fits, no GPU means CPU', () => {
     assert.equal(recommendDevice('onnx-community/moonshine-base-ONNX', STRONG).device, 'cpu');
-    assert.equal(recommendDevice('Xenova/whisper-base.en', STRONG).device, 'webgpu');
+    assert.equal(recommendDevice('Xenova/whisper-base.en', STRONG).device, 'cpu'); // threaded CPU matches the GPU
+    assert.equal(recommendDevice('Xenova/whisper-small.en', STRONG).device, 'webgpu');
+    assert.equal(recommendDevice('distil-whisper/distil-small.en', STRONG).device, 'webgpu');
     assert.equal(recommendDevice('Xenova/whisper-base.en', WEAK).device, 'cpu');
     assert.equal(recommendDevice('distil-whisper/distil-large-v3', { ...STRONG, gpuVramMb: 2000 }).device, 'cpu'); // too big for 2 GB
     assert.equal(modelFamily('distil-whisper/distil-small.en'), 'distil');
@@ -212,4 +214,23 @@ test('device: a measurement on this PC overrides the rule of thumb, with a margi
     const r = recommendDevice('Xenova/whisper-base.en', STRONG, { modelId: 'Xenova/whisper-base.en', cpuMs: 300, gpuMs: 900 });
     assert.equal(r.device, 'cpu');
     assert.ok(r.measured && /3\.0/.test(r.reason), r.reason);
+});
+
+// --- CPU thread counts ---
+import { defaultCpuThreads, cpuThreadCandidates } from '../src/setups';
+
+test('threads: default is modest and never exceeds half the logical cores or 4', () => {
+    assert.equal(defaultCpuThreads(32), 4);
+    assert.equal(defaultCpuThreads(16), 4);
+    assert.equal(defaultCpuThreads(8), 4);
+    assert.equal(defaultCpuThreads(4), 2);
+    assert.equal(defaultCpuThreads(2), 1);
+    assert.equal(defaultCpuThreads(1), 1);
+});
+
+test('threads: speed-test candidates are ascending, unique, capped at 6 and half the cores', () => {
+    assert.deepEqual(cpuThreadCandidates(32), [2, 4, 6]);
+    assert.deepEqual(cpuThreadCandidates(8), [2, 4]);
+    assert.deepEqual(cpuThreadCandidates(4), [2]);
+    assert.deepEqual(cpuThreadCandidates(2), [1]);
 });

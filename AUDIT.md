@@ -45,6 +45,13 @@ whisper-tiny CPU 1308 / WebGPU 959 ms · whisper-base CPU 2729 / WebGPU 1368 ms 
 - Decoder loops on truncated audio ("milk and milk and milk...") are now collapsed; quotation marks a model wraps around a phrase are stripped
 - Tested and **not adopted**: Parakeet CTC 0.6B (fast but unreliable through this runtime: empty output on one pass, dropped a sentence on another), Gemma 3 1B (rewrote 145-210% of words), Whisper large-v3-turbo (too heavy for dictation latency)
 
+**Fourth pass: multithreaded CPU decoding**
+- The page was not cross-origin isolated, so `SharedArrayBuffer` did not exist and ONNX Runtime ran on **one thread**. The UI is now served from `app://wavescribe` with COOP/COEP headers, and ONNX Runtime's own loader/binary are shipped in `public/ort` (bundling them into the worker made helper threads hang). Existing installs re-download their speech models once, because browser storage is per origin.
+- Whisper Base on CPU (3 s clip, median of 8): 1 thread 2467 ms, 2 -> 1671, 4 -> 1142, **6 -> 1019**, but 8 -> 2923 and 12 -> 2663 (slow efficiency cores hold the group up). Moonshine Base 332 -> 235 ms at 6 threads; Moonshine Tiny barely changes; distil-small stays at 6.5-9 s on CPU, so Precise remains GPU-only.
+- Defaults: CPU decoding uses min(4, cores/2) threads; **Test my PC** tries 2/4/6 and saves the quickest. GPU sessions are pinned to 1 helper thread: left unset, ONNX Runtime picked a large pool and Whisper on GPU got 2x slower (1.2 s -> 2.7 s).
+- Real-app results (default settings): Whisper Base CPU 2.2 s -> ~1.05 s, Moonshine Base CPU ~0.33 s -> ~0.21 s (also in the packaged build).
+- Test tooling: windows now open on screen #1 without taking focus (`tools/eval/display.mjs`); the test profile is reused so models are not re-downloaded; `probe.mjs` and the `window.__wavescribe.benchCpuThreads` hook measure thread scaling.
+
 **Packaged build** (installer 138 MB): click mode 0.82-0.84 s, push-to-talk 0.95 s (Moonshine Base + AI cleanup, 14 s clip).
 
 **Not done yet**

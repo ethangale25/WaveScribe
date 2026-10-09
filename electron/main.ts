@@ -1,4 +1,4 @@
-import { app, BrowserWindow, globalShortcut, ipcMain, clipboard, Menu, screen, Rectangle, Notification, nativeImage, Tray } from 'electron'
+import { app, BrowserWindow, globalShortcut, ipcMain, clipboard, Menu, screen, Rectangle, Notification, nativeImage, Tray, protocol } from 'electron'
 import path from 'path'
 import { fileURLToPath } from 'url'
 import fs from 'fs'
@@ -30,6 +30,48 @@ const __dirname = path.dirname(__filename)
 
 if (process.platform === 'win32') {
     app.setAppUserModelId('com.wavescribe.app')
+}
+
+// The app is served from its own origin (app://wavescribe) instead of file:// so the page can be
+// "cross-origin isolated". That unlocks SharedArrayBuffer, which WebAssembly threads need to decode
+// speech on several CPU cores. The scheme must be registered before the app is ready.
+protocol.registerSchemesAsPrivileged([
+    { scheme: 'app', privileges: { standard: true, secure: true, supportFetchAPI: true, corsEnabled: true, stream: true } },
+])
+
+const MIME_TYPES: Record<string, string> = {
+    '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.mjs': 'text/javascript; charset=utf-8',
+    '.css': 'text/css; charset=utf-8', '.json': 'application/json', '.wasm': 'application/wasm',
+    '.svg': 'image/svg+xml', '.png': 'image/png', '.ico': 'image/x-icon', '.wav': 'audio/wav',
+    '.woff': 'font/woff', '.woff2': 'font/woff2', '.map': 'application/json',
+}
+
+function registerAppProtocol() {
+    const distDir = path.join(app.getAppPath(), 'dist')
+    protocol.handle('app', async (request) => {
+        try {
+            let relative = decodeURIComponent(new URL(request.url).pathname)
+            if (relative === '/' || relative === '') relative = '/index.html'
+            const file = path.normalize(path.join(distDir, relative))
+            // Never serve anything outside the app's own dist folder.
+            if (!file.startsWith(distDir + path.sep)) return new Response('Forbidden', { status: 403 })
+
+            const data = await fs.promises.readFile(file)
+            return new Response(data as unknown as BodyInit, {
+                headers: {
+                    'Content-Type': MIME_TYPES[path.extname(file).toLowerCase()] || 'application/octet-stream',
+                    // Cross-origin isolation. "credentialless" still lets the page load cross-origin
+                    // resources (fonts, model files from Hugging Face) as long as no cookies are sent.
+                    'Cross-Origin-Opener-Policy': 'same-origin',
+                    'Cross-Origin-Embedder-Policy': 'credentialless',
+                    'Cross-Origin-Resource-Policy': 'same-origin',
+                },
+            })
+        } catch {
+            console.warn('[app://] not found:', request.url)
+            return new Response('Not found', { status: 404 })
+        }
+    })
 }
 
 const store = new Store() as any
@@ -160,13 +202,33 @@ function registerDictationHotkey(accelerator: string): boolean {
     }
 }
 
+// Test mode: automated runs set WAVESCRIBE_TEST_DISPLAY_POINT (physical pixel "x,y") to a point on the
+// monitor they may use. The window then opens centred on that monitor and does not take focus, so
+// a developer working on another screen is never interrupted.
+function getTestDisplay(): Electron.Display | null {
+    const raw = process.env.WAVESCRIBE_TEST_DISPLAY_POINT
+    if (!raw) return null
+    const [x, y] = raw.split(',').map(Number)
+    if (!Number.isFinite(x) || !Number.isFinite(y)) return null
+    return screen.getDisplayNearestPoint(screen.screenToDipPoint({ x, y }))
+}
+
 function createWindow() {
+    const testDisplay = getTestDisplay()
     const iconPath = getAppIconPath();
     const appIcon = getAppIcon();
 
+    const windowWidth = 550
+    const windowHeight = 600
+    const testPosition = testDisplay ? {
+        x: Math.round(testDisplay.workArea.x + (testDisplay.workArea.width - windowWidth) / 2),
+        y: Math.round(testDisplay.workArea.y + (testDisplay.workArea.height - windowHeight) / 2),
+    } : {}
+
     mainWindow = new BrowserWindow({
-        width: 550,
-        height: 600,
+        ...testPosition,
+        width: windowWidth,
+        height: windowHeight,
         minWidth: 450,
         minHeight: 540,
         transparent: true,
@@ -190,7 +252,7 @@ function createWindow() {
         mainWindow.loadURL(process.env.VITE_DEV_SERVER_URL)
         // mainWindow.webContents.openDevTools()
     } else {
-        mainWindow.loadFile('dist/index.html')
+        mainWindow.loadURL('app://wavescribe/index.html')
     }
 
     mainWindow.webContents.on('console-message', (event, level, message, line, sourceId) => {
@@ -198,7 +260,9 @@ function createWindow() {
     });
 
     mainWindow.once('ready-to-show', () => {
-        mainWindow?.show()
+        // In test mode show the window without activating it (no focus stolen from other screens).
+        if (testDisplay) mainWindow?.showInactive()
+        else mainWindow?.show()
     })
 
     // Closing the window keeps WaveScribe running in the tray so the global hotkey keeps working.
@@ -222,7 +286,7 @@ function createWindow() {
     const hotkey = store.get('hotkey', 'CommandOrControl+Shift+Space') as string
     if (!registerDictationHotkey(hotkey)) {
         // Without this the app would say "Ready" while the hotkey silently did nothing.
-        try {
+        if (!testDisplay) try {
             new Notification({
                 title: 'WaveScribe hotkey unavailable',
                 body: `Could not register "${hotkey}". Another app may be using it. Choose a different shortcut in Settings.`
@@ -265,6 +329,7 @@ app.on('second-instance', () => {
 app.whenReady().then(async () => {
     if (!gotSingleInstanceLock) return
     Menu.setApplicationMenu(null)
+    registerAppProtocol()
     // Warm the GPU-memory probe in the background so nothing ever blocks on it later.
     probeGpuVram().catch(() => { })
     const appIcon = getAppIcon()
@@ -640,7 +705,7 @@ ipcMain.handle('prime-caret', () => {
 });
 
 ipcMain.handle('show-cursor-spinner', () => {
-    if (!spinnerWindow) return { success: false };
+    if (!spinnerWindow || process.env.WAVESCRIBE_TEST_DISPLAY_POINT) return { success: false };
     try {
         // Use the primed caret if ready, otherwise the mouse position. Never wait on PowerShell here.
         const pos = cachedCaret ?? getCursorPosition() ?? (() => {

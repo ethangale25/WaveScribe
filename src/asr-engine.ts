@@ -13,14 +13,20 @@ env.allowLocalModels = false;
 env.useBrowserCache = true;
 
 // transformers.js points ONNX Runtime at a CDN by default, which breaks the first launch when
-// offline even though the WASM is already bundled with the app. Clearing the override makes ONNX
-// Runtime resolve its WASM relative to the app's own bundle.
+// offline. Instead the WebAssembly loader and binary are shipped with the app (public/ort) and
+// served from the same origin. Using ONNX Runtime's own loader file (rather than a copy bundled
+// into this worker) is also what lets it start helper threads for multi-core CPU decoding.
 try {
-    if (env.backends?.onnx?.wasm) {
-        (env.backends.onnx.wasm as any).wasmPaths = undefined;
+    const wasm = env.backends?.onnx?.wasm as any;
+    if (wasm && typeof self !== 'undefined' && (self as any).location) {
+        const base = new URL('/ort/', (self as any).location.href).href;
+        wasm.wasmPaths = {
+            mjs: base + 'ort-wasm-simd-threaded.asyncify.mjs',
+            wasm: base + 'ort-wasm-simd-threaded.asyncify.wasm',
+        };
     }
 } catch (err) {
-    console.warn('[Transcribe] Could not reset ONNX wasmPaths:', err);
+    console.warn('[Transcribe] Could not set ONNX wasmPaths:', err);
 }
 
 let transcriber: any = null;
@@ -31,7 +37,8 @@ export async function loadModel(
     modelName: string = 'Xenova/whisper-tiny.en',
     device: 'cpu' | 'webgpu' = 'cpu',
     dtype: string | undefined = undefined,
-    onProgress?: (info: any) => void
+    onProgress?: (info: any) => void,
+    threads?: number
 ) {
     // Check WebGPU availability before attempting to use it
     if (device === 'webgpu' && !(typeof navigator !== 'undefined' && 'gpu' in navigator)) {
@@ -47,6 +54,12 @@ export async function loadModel(
 
     currentModelName = modelName;
     currentDevice = device;
+
+    // CPU decoding runs on WebAssembly; more threads make it faster, but only if the page can use
+    // SharedArrayBuffer (otherwise ONNX Runtime silently falls back to one thread).
+    const wasm = env.backends?.onnx?.wasm;
+    if (wasm && threads && threads > 0) wasm.numThreads = threads;
+    console.log(`[ASR] ${modelName} on ${device}; wasm threads=${wasm?.numThreads}; SharedArrayBuffer=${typeof SharedArrayBuffer}; isolated=${(globalThis as any).crossOriginIsolated}`);
 
     const pipelineOptions: any = {
         progress_callback: onProgress,

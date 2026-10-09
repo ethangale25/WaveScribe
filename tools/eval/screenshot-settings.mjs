@@ -9,6 +9,7 @@ import path from 'path';
 import fs from 'fs';
 import os from 'os';
 import { createRequire } from 'module';
+import { testDisplayEnv } from './display.mjs';
 
 const require = createRequire(import.meta.url);
 const electronPath = require('electron');
@@ -33,7 +34,7 @@ fs.writeFileSync(path.join(tempProfile, 'config.json'), JSON.stringify(config));
 if (fs.existsSync(path.join(realProfile, 'models'))) fs.symlinkSync(path.join(realProfile, 'models'), path.join(tempProfile, 'models'), 'junction');
 
 const PORT = 9335;
-const proc = spawn(electronPath, ['.', `--user-data-dir=${tempProfile}`, `--remote-debugging-port=${PORT}`], { stdio: 'ignore' });
+const proc = spawn(electronPath, ['.', `--user-data-dir=${tempProfile}`, `--remote-debugging-port=${PORT}`], { stdio: 'ignore', env: { ...process.env, ...testDisplayEnv() } });
 function done(code) {
     try { proc.kill(); } catch { }
     setTimeout(() => {

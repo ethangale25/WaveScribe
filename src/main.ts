@@ -1987,10 +1987,12 @@ if (appElement) {
     // Read performance settings
     let device: 'cpu' | 'webgpu' = 'cpu';
     let dtype: string | undefined = undefined;
+    let threads: number | undefined = undefined;
     if (window.electronAPI) {
       const s = await window.electronAPI.getSettings();
       speedSamples = Array.isArray(s?.speedSamples) ? s.speedSamples : speedSamples;
       device = await resolveDevice(modelId, s?.computeDevice ?? 'auto');
+      if (typeof s?.cpuThreads === 'number') threads = s.cpuThreads;
       // Automatically assign the optimal precision behind the scenes:
       // - WebGPU: 'auto' (fp32) for fast & accurate speech recognition
       // - CPU: undefined (pre-quantized q8 weights) for highest CPU performance
@@ -2101,7 +2103,7 @@ if (appElement) {
       err?.message?.toLowerCase().includes('out of memory');
 
     try {
-      await loadModel(modelId, device, dtype, progressCallback);
+      await loadModel(modelId, device, dtype, progressCallback, threads);
       setModelReadyUI();
     } catch (err: any) {
       if (err?.code === 'WEBGPU_UNAVAILABLE') {
@@ -2109,7 +2111,7 @@ if (appElement) {
         if (window.electronAPI) await window.electronAPI.setSetting('computeDevice', 'cpu');
         if (inputComputeDevice) inputComputeDevice.value = 'cpu';
         try {
-          await loadModel(modelId, 'cpu', undefined, progressCallback);
+          await loadModel(modelId, 'cpu', undefined, progressCallback, threads);
           setModelReadyUI();
         } catch (cpuErr) {
           handleLoadError(cpuErr);
@@ -2120,7 +2122,7 @@ if (appElement) {
         if (window.electronAPI) await window.electronAPI.setSetting('computeDevice', 'cpu');
         if (inputComputeDevice) inputComputeDevice.value = 'cpu';
         try {
-          await loadModel(modelId, 'cpu', undefined, progressCallback);
+          await loadModel(modelId, 'cpu', undefined, progressCallback, threads);
           setModelReadyUI();
         } catch (cpuErr) {
           handleLoadError(cpuErr);

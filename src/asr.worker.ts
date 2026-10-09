@@ -16,7 +16,7 @@ ctx.onmessage = async (event: MessageEvent) => {
             case 'load':
                 await engine.loadModel(msg.model, msg.device, msg.dtype, (info: unknown) => {
                     ctx.postMessage({ type: 'progress', id: msg.id, info });
-                });
+                }, msg.threads);
                 ctx.postMessage({ type: 'result', id: msg.id, value: undefined });
                 break;
             case 'transcribe': {

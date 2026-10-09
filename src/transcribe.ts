@@ -81,7 +81,8 @@ export class AsrClient {
         modelName: string = 'Xenova/whisper-tiny.en',
         device: Device = 'cpu',
         dtype: string | undefined = undefined,
-        onProgress?: (info: any) => void
+        onProgress?: (info: any) => void,
+        threads?: number
     ): Promise<void> {
         // Check WebGPU availability before attempting to use it
         if (device === 'webgpu' && !(typeof navigator !== 'undefined' && 'gpu' in navigator)) {
@@ -95,7 +96,7 @@ export class AsrClient {
         this.modelName = modelName;
         this.device = device;
 
-        await this.request<void>({ type: 'load', model: modelName, device, dtype }, onProgress);
+        await this.request<void>({ type: 'load', model: modelName, device, dtype, threads }, onProgress);
         this.loaded = true;
     }
 
@@ -146,8 +147,9 @@ export const loadModel = (
     modelName?: string,
     device?: Device,
     dtype?: string,
-    onProgress?: (info: any) => void
-): Promise<void> => defaultClient.loadModel(modelName, device, dtype, onProgress);
+    onProgress?: (info: any) => void,
+    threads?: number
+): Promise<void> => defaultClient.loadModel(modelName, device, dtype, onProgress, threads);
 export const isModelLoaded = (): boolean => defaultClient.isModelLoaded();
 export const getCurrentDevice = (): Device => defaultClient.getCurrentDevice();
 export const getCurrentModelName = (): string => defaultClient.getCurrentModelName();

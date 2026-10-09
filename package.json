@@ -4,7 +4,9 @@
   "description": "A sleek, Apple-inspired voice dictation application with a modern graphical interface.",
   "main": "dist-electron/main.js",
   "scripts": {
+    "predev": "node scripts/copy-ort.mjs",
     "dev": "vite",
+    "prebuild": "node scripts/copy-ort.mjs",
     "build": "vite build && electron-builder",
     "eval:build": "esbuild tools/eval/run.ts --bundle --platform=node --format=esm --outfile=tools/eval/run.mjs --external:@huggingface/transformers --external:onnxruntime-node --external:sharp --log-level=warning",
     "test": "esbuild tests/text-pipeline.test.ts --bundle --platform=node --format=esm --outfile=.test-build/text-pipeline.test.mjs --log-level=warning && node --test .test-build/text-pipeline.test.mjs"

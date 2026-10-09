@@ -17,6 +17,7 @@ import path from 'path';
 import fs from 'fs';
 import os from 'os';
 import { createRequire } from 'module';
+import { testDisplayEnv } from './display.mjs';
 
 const require = createRequire(import.meta.url);
 const electronPath = require('electron');
@@ -30,6 +31,7 @@ if (!clip || !secondsArg) {
 }
 const modelFlag = flag('model');
 const repeat = parseInt(flag('repeat') || '1', 10);
+const threadsFlag = flag('threads') ? parseInt(flag('threads'), 10) : undefined; // CPU decoding threads
 const ptt = process.argv.includes('--ptt'); // hold Ctrl+Shift+Space with real key events instead of clicking
 const deviceFlag = flag('device') || 'cpu';
 // One fixed throw-away profile, reused between runs so downloaded speech models stay cached
@@ -40,7 +42,7 @@ fs.mkdirSync(tempProfile, { recursive: true });
 try { fs.unlinkSync(path.join(tempProfile, 'models')); } catch { }
 if (modelFlag) {
     fs.writeFileSync(path.join(tempProfile, 'config.json'), JSON.stringify({
-        model: modelFlag, computeDevice: deviceFlag, aiReformat: flag('ai') === '1', vadEnabled: true, playSounds: false, showNotify: false, pushToTalk: ptt,
+        model: modelFlag, computeDevice: deviceFlag, aiReformat: flag('ai') === '1', vadEnabled: true, playSounds: false, showNotify: false, pushToTalk: ptt, cpuThreads: threadsFlag,
     }));
     if (flag('ai') === '1') {
         // --ai=1 also links the real LLM models folder so the cleanup step runs.
@@ -55,6 +57,7 @@ if (modelFlag) {
     config.playSounds = false;
     config.showNotify = false;
     if (ptt) config.pushToTalk = true;
+    if (threadsFlag) config.cpuThreads = threadsFlag;
     fs.writeFileSync(path.join(tempProfile, 'config.json'), JSON.stringify(config));
     if (fs.existsSync(path.join(realProfile, 'models'))) {
         fs.symlinkSync(path.join(realProfile, 'models'), path.join(tempProfile, 'models'), 'junction');
@@ -89,7 +92,7 @@ const proc = spawn(exe ? path.resolve(exe) : electronPath, [
     '--use-fake-ui-for-media-stream',
     '--use-fake-device-for-media-stream',
     `--use-file-for-fake-audio-capture=${path.resolve(clip)}%noloop`,
-], { cwd: appDir, env: { ...process.env, WAVESCRIBE_NO_PASTE: '1' }, stdio: ['ignore', 'pipe', 'pipe'] });
+], { cwd: appDir, env: { ...process.env, WAVESCRIBE_NO_PASTE: '1', ...testDisplayEnv() }, stdio: ['ignore', 'pipe', 'pipe'] });
 
 const onData = (d) => d.toString().split('\n').forEach(l => { if (l.trim()) logs.push(l); });
 proc.stdout.on('data', onData);
@@ -141,6 +144,7 @@ for (let i = 0; i < 600; i++) {
     await sleep(500);
 }
 if (!ready) { console.error('Model never became ready'); console.error(logs.slice(-10).join('\n')); done(1); }
+logs.filter(l => l.includes('[ASR]')).forEach(l => console.log(l.replace('[Renderer]: ', '')));
 console.log('model ready; starting recording');
 await sleep(1500);
 

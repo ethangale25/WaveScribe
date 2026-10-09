@@ -23,3 +23,11 @@ history and stats are never touched) and with `WAVESCRIBE_NO_PASTE=1` (nothing i
 the real global hotkey; `--queue-test` presses it while a dictation is still processing; `--exe` runs a
 packaged build. Other tools: `llm-bench.mjs` / `llm-prompts.mjs` (AI cleanup speed and fidelity),
 `download-test.ts` (cancel, resume and checksum against Hugging Face).
+
+## Test windows only open on screen #1
+
+Every tool that launches the app (`drive-app`, `screenshot-settings`, `probe`) passes
+`WAVESCRIBE_TEST_DISPLAY_POINT` (see `display.mjs`). In that mode the app opens centred on
+`\.\DISPLAY1` without taking focus, never shows the caret spinner or notifications, and the tool refuses
+to launch if the display cannot be found or is the primary monitor. Override the monitor with
+`WAVESCRIBE_TEST_DISPLAY`.

@@ -4,6 +4,7 @@ import { stitchSegments } from '../src/stitch';
 import { isFaithfulCleanup, wordChangeRatio } from '../electron/fidelity';
 import { findQuietestCut, countSpeechWindows, applyVAD } from '../src/dsp';
 import { PhraseSegmenter } from '../src/segmenter';
+import { assessLlmFit, recommendLlm } from '../src/llm-fit';
 
 const seg = (text: string, forcedCut = false) => ({ text, forcedCut });
 
@@ -233,4 +234,33 @@ test('threads: speed-test candidates are ascending, unique, capped at 6 and half
     assert.deepEqual(cpuThreadCandidates(8), [2, 4]);
     assert.deepEqual(cpuThreadCandidates(4), [2]);
     assert.deepEqual(cpuThreadCandidates(2), [1]);
+});
+
+const GB = 1024 * 1024 * 1024;
+const llm = (id: string, parameters: string, gb: number) => ({ id, parameters, approxBytes: gb * GB });
+const LLMS = [
+    llm('llama-3.2-1b', '1B', 0.8), llm('qwen-2.5-1.5b', '1.5B', 1), llm('qwen3-4b-instruct', '4B', 2.4),
+    llm('llama-3.1-8b', '8B', 4.9), llm('qwen-2.5-14b', '14B', 9), llm('deepseek-r1-14b', '14B', 9),
+];
+
+test('llm fit: a model that fits in graphics memory runs great', () => {
+    const fit = assessLlmFit(llm('llama-3.1-8b', '8B', 4.9), { totalRamGb: 32, gpuVramMb: 16384 });
+    assert.equal(fit.fit, 'great');
+    assert.equal(fit.fitsOnGpu, true);
+});
+
+test('llm fit: large models without room on the GPU are slow, or too big for memory', () => {
+    const hw = { totalRamGb: 16, gpuVramMb: 4096 };
+    assert.equal(assessLlmFit(llm('llama-3.1-8b', '8B', 4.9), hw).fit, 'slow');
+    assert.equal(assessLlmFit(llm('qwen-2.5-14b', '14B', 9), { totalRamGb: 8, gpuVramMb: null }).fit, 'too-big');
+    assert.equal(assessLlmFit(llm('qwen3-4b-instruct', '4B', 2.4), { totalRamGb: 8, gpuVramMb: null }).fitsOnGpu, null);
+});
+
+test('llm recommend: chat gets the biggest model that runs great, never a reasoning model', () => {
+    assert.equal(recommendLlm('chat', LLMS, { totalRamGb: 64, gpuVramMb: 24576 }), 'qwen-2.5-14b');
+    assert.equal(recommendLlm('chat', LLMS, { totalRamGb: 16, gpuVramMb: null }), 'qwen3-4b-instruct');
+});
+
+test('llm recommend: cleanup sticks to the tested small model even on a big GPU', () => {
+    assert.equal(recommendLlm('cleanup', LLMS, { totalRamGb: 64, gpuVramMb: 24576 }), 'qwen3-4b-instruct');
 });

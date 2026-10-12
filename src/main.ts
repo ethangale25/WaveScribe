@@ -7,6 +7,8 @@ import { DEFAULT_MODEL_ID, MODEL_VRAM_MB, MODEL_DETAILS, isHfModelDownloaded } f
 import { escapeHtml, removeFillers, applyDictionary, applyAutoFormatting, countWords } from './postprocess';
 import { loadModel, transcribeAudio, isModelLoaded, getCurrentDevice, StreamingTranscriptionSession } from './transcribe';
 import { initDiagnostics } from './diagnostics';
+import { assessLlmFit, fitLabel, isReasoningModel, rankFor, recommendLlm, LlmPurpose } from './llm-fit';
+import { renderChatMarkdown } from './chat-markdown';
 // @ts-ignore
 import micIcon from '../assets/mic.svg'
 // @ts-ignore
@@ -17,10 +19,6 @@ import settingsIcon from '../assets/settings.svg'
 import waveIcon from '../assets/wave.svg'
 // @ts-ignore
 import chatIcon from '../assets/chat.svg'
-// @ts-ignore
-import downloadIcon from '../assets/download.svg'
-// @ts-ignore
-import boltIcon from '../assets/bolt.svg'
 // @ts-ignore
 import infoIcon from '../assets/information.svg'
 // @ts-ignore
@@ -69,6 +67,9 @@ declare global {
         loadedBytes: number
         totalBytes: number
         error: string
+        chatModelId: string
+        chatStatus: 'unloaded' | 'loading' | 'ready' | 'error'
+        chatError: string
       }>
       llmGetCatalog: () => Promise<Array<{
         id: string
@@ -97,9 +98,12 @@ declare global {
       llmChatSend: (messages: { role: 'user' | 'assistant' | 'system'; content: string }[]) => Promise<{ success: boolean; text?: string; error?: string }>
       llmChatAbort: () => Promise<{ success: boolean }>
       llmChatClear: () => Promise<{ success: boolean }>
+      llmChatSetModel: (modelId: string) => Promise<{ success: boolean }>
+      llmChatLoad: () => Promise<{ success: boolean; error?: string }>
+      llmChatUnload: () => Promise<{ success: boolean }>
       captureContext: () => Promise<{ success: boolean; text: string }>
       showNotification: (title: string, body: string) => Promise<{ success: boolean }>
-      onLlmDownloadProgress: (callback: (progress: { modelId: string; percent: number; loadedBytes: number; totalBytes: number }) => void) => () => void
+      onLlmDownloadProgress: (callback: (progress: { modelId: string; percent: number; loadedBytes: number; totalBytes: number; phase?: 'downloading' | 'verifying' }) => void) => () => void
       onLlmChatToken: (callback: (token: string) => void) => () => void
     }
   }
@@ -394,10 +398,23 @@ if (appElement) {
                   <span class="status-indicator" id="ai-status-dot"></span>
                   <span id="ai-status-text">Model not downloaded</span>
                 </span>
-                <button class="btn btn-secondary btn-small" id="ai-download-btn" style="display: none;">Download</button>
+                <span class="s-inline">
+                  <button class="btn btn-secondary btn-small" id="ai-download-btn" style="display: none;">Download</button>
+                  <button class="s-link" id="ai-change-model">Change</button>
+                </span>
               </div>
               <div id="ai-progress-bar" class="s-progress" style="display: none;">
                 <div class="progress-bar-track"><div id="ai-progress-fill" class="progress-bar-fill" style="width: 0%;"></div></div>
+              </div>
+            </div>
+          </section>
+
+          <section class="s-section">
+            <h3>AI Chat</h3>
+            <div class="s-card">
+              <div class="s-row">
+                <span class="s-label">Chat model<span class="s-hint" id="chat-model-hint">Loads only while AI Chat is open</span></span>
+                <button class="btn btn-secondary btn-small" id="settings-chat-model-btn">Choose</button>
               </div>
             </div>
           </section>
@@ -475,17 +492,10 @@ if (appElement) {
         <div class="modal-header modal-header-stacked">
           <div class="modal-header-top">
             <div>
-              <h2 style="margin: 0; font-size: 16px; font-weight: 700; color: var(--text-primary);">Open Source LLM Models</h2>
-              <p style="font-size: 12px; color: var(--text-secondary); margin: 3px 0 0 0;">Filtered for your PC's hardware capacity</p>
+              <h2 class="picker-title" id="picker-title">Chat model</h2>
+              <p class="picker-sub" id="picker-sub">Checking your PC…</p>
             </div>
             <button class="btn-close" id="chat-models-close">×</button>
-          </div>
-          <div class="hw-header-bar" id="hw-profile-card">
-            <div class="hw-header-info">
-              <div class="hw-header-specs" id="hw-specs-title">System Specs: Detecting...</div>
-              <div class="hw-header-sub" id="hw-specs-subtitle">Checking RAM and GPU...</div>
-            </div>
-            <div class="model-card-badge green" id="hw-tier-badge">COMPATIBLE</div>
           </div>
         </div>
 
@@ -673,66 +683,79 @@ if (appElement) {
     window.electronAPI?.windowControl('maximize');
   });
 
+  // Mini-mode transitions. The OS resizes the window in one jump, so the UI is faded out first,
+  // the window is resized while nothing is visible, and the new layout fades in once the resize
+  // has actually reached the page.
+  const MINI_FADE_OUT_MS = 200;
+  let miniTransitionBusy = false;
+
+  const nextFrame = () => new Promise<void>(r => requestAnimationFrame(() => r()));
+  const waitForWindowResize = (timeoutMs = 250) => new Promise<void>(resolve => {
+    const done = () => { window.removeEventListener('resize', done); clearTimeout(timer); resolve(); };
+    const timer = setTimeout(done, timeoutMs);
+    window.addEventListener('resize', done);
+  });
+
   document.getElementById('win-island')?.addEventListener('click', async () => {
-    if (window.electronAPI) {
-      // Start fade out of main UI
-      document.body.classList.add('transitioning-to-mini');
+    if (!window.electronAPI || miniTransitionBusy) return;
+    miniTransitionBusy = true;
+    try {
+      document.body.classList.add('ui-leaving');
+      await new Promise(r => setTimeout(r, MINI_FADE_OUT_MS));
+      document.body.classList.add('ui-hidden');
+      document.body.classList.remove('ui-leaving');
 
-      // Wait for fade out to complete
-      await new Promise(r => setTimeout(r, 300));
-
-      await window.electronAPI.toggleMiniMode(true);
-
-      // Swap to mini-mode
-      document.body.classList.remove('transitioning-to-mini');
-      document.body.classList.add('mini-mode');
-
-      // Sync current status text and dot color before showing
+      // Sync current status text and dot color, and move the waveform into the island.
       const statusDot = document.getElementById('status-dot');
       const statusMessage = document.getElementById('status-message');
       const islandDot = document.getElementById('island-dot');
       const islandText = document.getElementById('island-text');
       if (islandDot && statusDot) islandDot.className = statusDot.className;
       if (islandText && statusMessage) islandText.textContent = statusMessage.textContent;
-
-      // Move canvas to island
       const canvas = document.getElementById('waveform-canvas');
       const islandContent = document.querySelector('.island-content');
-      if (canvas && islandContent) {
-        islandContent.appendChild(canvas);
-      }
+      if (canvas && islandContent) islandContent.appendChild(canvas);
+
+      const resized = waitForWindowResize();
+      await window.electronAPI.toggleMiniMode(true);
+      await resized;
+      await nextFrame();
+
+      // Swapping both classes in one frame lets the island animate in from its hidden state.
+      document.body.classList.add('mini-mode');
+      document.body.classList.remove('ui-hidden');
+    } finally {
+      miniTransitionBusy = false;
     }
   });
 
   document.getElementById('mini-island')?.addEventListener('click', async () => {
-    if (window.electronAPI) {
-      // Start fade out of the mini island
+    if (!window.electronAPI || miniTransitionBusy) return;
+    miniTransitionBusy = true;
+    try {
       document.body.classList.add('transitioning-from-mini');
+      await new Promise(r => setTimeout(r, MINI_FADE_OUT_MS));
 
-      // Wait for fade out to complete
-      await new Promise(r => setTimeout(r, 300));
-
-      // Prep main UI to fade in (set it to opacity zero BEFORE window expands)
+      // Hide everything before the window grows, so the old pill-sized layout never flashes.
+      document.body.classList.add('ui-hidden');
       document.body.classList.remove('mini-mode', 'transitioning-from-mini');
-      document.body.classList.add('transitioning-to-main');
 
-      // Expand window
-      await window.electronAPI.toggleMiniMode(false);
-
-      // Move canvas back to button
       const canvas = document.getElementById('waveform-canvas');
       const recordBtn = document.getElementById('record-btn');
-      if (canvas && recordBtn) {
-        recordBtn.appendChild(canvas);
-      }
+      if (canvas && recordBtn) recordBtn.appendChild(canvas);
 
-      // Small delay to let window snap happen, then remove the hold class to trigger fade-in
-      requestAnimationFrame(() => {
-        document.body.classList.remove('transitioning-to-main');
-        
-        // Trigger wave animation when main UI fades back in
-        setTimeout(triggerWaveAnimation, 150);
-      });
+      const resized = waitForWindowResize();
+      await window.electronAPI.toggleMiniMode(false);
+      await resized;
+      await nextFrame();
+      await nextFrame();
+
+      document.body.classList.remove('ui-hidden');
+      document.body.classList.add('ui-entering');
+      setTimeout(() => document.body.classList.remove('ui-entering'), 450);
+      setTimeout(triggerWaveAnimation, 200);
+    } finally {
+      miniTransitionBusy = false;
     }
   });
 
@@ -1230,24 +1253,42 @@ if (appElement) {
   const aiProgressFill = document.getElementById('ai-progress-fill');
   const aiDownloadBtn = document.getElementById('ai-download-btn');
 
+  let cleanupModelIdForUi = '';
+
   const updateAiStatusUI = async () => {
     if (!window.electronAPI) return;
-    const s = await window.electronAPI.llmStatus();
+    const [s, catalog, hw] = await Promise.all([
+      window.electronAPI.llmStatus(),
+      window.electronAPI.llmGetCatalog(),
+      window.electronAPI.getHardwareProfile(),
+    ]);
+    cleanupModelIdForUi = s.activeModelId;
+    const cleanupModel = catalog.find(m => m.id === s.activeModelId);
+    const name = cleanupModel?.name || 'Model';
+
+    // AI Chat section: which model chat uses and how well it runs here.
+    const chatHint = document.getElementById('chat-model-hint');
+    const chatModel = catalog.find(m => m.id === s.chatModelId);
+    if (chatHint) {
+      chatHint.textContent = chatModel
+        ? `${chatModel.name} · ${chatModel.isDownloaded ? fitLabel(assessLlmFit(chatModel, hw).fit) : 'not downloaded'}`
+        : 'No model chosen';
+    }
 
     if (s.status === 'ready') {
       if (aiStatusDot) aiStatusDot.className = 'status-indicator green';
-      if (aiStatusText) aiStatusText.textContent = 'Model ready';
+      if (aiStatusText) aiStatusText.textContent = `${name} · ready`;
       if (aiDownloadBtn) aiDownloadBtn.style.display = 'none';
       if (aiProgressBar) aiProgressBar.style.display = 'none';
     } else if (s.status === 'downloading') {
       if (aiStatusDot) aiStatusDot.className = 'status-indicator loading';
-      if (aiStatusText) aiStatusText.textContent = `Downloading... ${s.progress}%`;
+      if (aiStatusText) aiStatusText.textContent = `Downloading ${name}… ${s.progress}%`;
       if (aiProgressBar) aiProgressBar.style.display = 'block';
       if (aiProgressFill) aiProgressFill.style.width = s.progress + '%';
       if (aiDownloadBtn) aiDownloadBtn.style.display = 'none';
     } else if (s.status === 'loading') {
       if (aiStatusDot) aiStatusDot.className = 'status-indicator loading';
-      if (aiStatusText) aiStatusText.textContent = 'Loading model...';
+      if (aiStatusText) aiStatusText.textContent = `Loading ${name}…`;
       if (aiDownloadBtn) aiDownloadBtn.style.display = 'none';
       if (aiProgressBar) aiProgressBar.style.display = 'none';
     } else if (s.status === 'error') {
@@ -1260,16 +1301,16 @@ if (appElement) {
       if (aiProgressBar) aiProgressBar.style.display = 'none';
     } else {
       // not-downloaded
-      if (s.progress >= 100) {
+      if (cleanupModel?.isDownloaded) {
         if (aiStatusDot) aiStatusDot.className = 'status-indicator';
-        if (aiStatusText) aiStatusText.textContent = 'Model downloaded (not active)';
+        if (aiStatusText) aiStatusText.textContent = `${name} · loads when AI cleanup is on`;
         if (aiDownloadBtn) aiDownloadBtn.style.display = 'none';
       } else {
         if (aiStatusDot) aiStatusDot.className = 'status-indicator';
-        if (aiStatusText) aiStatusText.textContent = 'Model not downloaded';
+        if (aiStatusText) aiStatusText.textContent = `${name} · not downloaded`;
         if (aiDownloadBtn) {
           aiDownloadBtn.style.display = 'block';
-          aiDownloadBtn.textContent = 'Download Model (~1 GB)';
+          aiDownloadBtn.textContent = `Download (${(cleanupModel?.sizeText || '~1 GB').replace('~', '')})`;
         }
       }
       if (aiProgressBar) aiProgressBar.style.display = 'none';
@@ -1297,6 +1338,8 @@ if (appElement) {
 
   if (window.electronAPI) {
     window.electronAPI.onLlmDownloadProgress((progress: any) => {
+      // Only the cleanup model's download belongs in this status line (not a chat model's).
+      if (progress?.modelId && progress.modelId !== cleanupModelIdForUi) return;
       const pct = typeof progress === 'number' ? progress : (progress?.percent ?? 0);
       if (aiProgressFill) aiProgressFill.style.width = pct + '%';
       if (aiStatusText) {
@@ -2286,9 +2329,8 @@ if (appElement) {
   const chatModelsModal = document.getElementById('chat-models-modal');
   const chatModelsClose = document.getElementById('chat-models-close');
   const chatModelsDone = document.getElementById('chat-models-done');
-  const hwSpecsTitle = document.getElementById('hw-specs-title');
-  const hwSpecsSubtitle = document.getElementById('hw-specs-subtitle');
-  const hwTierBadge = document.getElementById('hw-tier-badge');
+  const pickerTitle = document.getElementById('picker-title');
+  const pickerSub = document.getElementById('picker-sub');
   const modelCatalogContainer = document.getElementById('model-catalog-container');
   const llmDownloadBanner = document.getElementById('llm-download-banner');
   const llmDownloadTitle = document.getElementById('llm-download-title');
@@ -2307,16 +2349,24 @@ if (appElement) {
   let isChatDictating = false;
   let chatDictationStream: MediaStream | null = null;
   let currentActiveAssistantBubbleContent: HTMLElement | null = null;
-  let cachedHwProfile: any = null;
+  let streamingReplyText = '';
+  let streamingRenderPending = false;
+  let chatModelDisplayName = 'AI';
+  let chatUnloadTimer: ReturnType<typeof setTimeout> | null = null;
+
+  // The chat model is only kept in memory while chat is in use, so it never competes with dictation.
+  const CHAT_UNLOAD_DELAY_MS = 60_000;
 
   // View Navigation
   const switchToChatView = async () => {
     if (dictationView && chatView) {
+      if (chatUnloadTimer) { clearTimeout(chatUnloadTimer); chatUnloadTimer = null; }
       dictationView.classList.add('hidden');
       chatView.classList.remove('hidden');
+      chatInputTextarea?.focus();
       await refreshHardwareSpecs();
       await refreshActiveChatModelUI();
-      chatInputTextarea?.focus();
+      void ensureChatModelLoaded();
     }
   };
 
@@ -2324,36 +2374,32 @@ if (appElement) {
     if (dictationView && chatView) {
       chatView.classList.add('hidden');
       dictationView.classList.remove('hidden');
+      if (chatUnloadTimer) clearTimeout(chatUnloadTimer);
+      chatUnloadTimer = setTimeout(() => {
+        chatUnloadTimer = null;
+        if (!isGeneratingChat && chatView.classList.contains('hidden')) {
+          window.electronAPI?.llmChatUnload();
+        }
+      }, CHAT_UNLOAD_DELAY_MS);
     }
   };
 
   btnOpenChat?.addEventListener('click', switchToChatView);
   btnChatBack?.addEventListener('click', switchToDictationView);
 
-  // Hardware Specs Detection & Display
+  const describeLlmHardware = (hw: { totalRamGb: number; gpuVramMb: number | null; gpuName: string | null }) => {
+    const parts = [`${Math.round(hw.totalRamGb)} GB memory`];
+    if (hw.gpuVramMb) parts.push(`${hw.gpuName || 'Graphics card'} (${Math.round(hw.gpuVramMb / 1024)} GB)`);
+    else parts.push('no graphics card memory detected');
+    return parts.join(' · ');
+  };
+
   const refreshHardwareSpecs = async () => {
-    if (!window.electronAPI) return;
+    if (!window.electronAPI || !chatHwBadge) return;
     try {
-      cachedHwProfile = await window.electronAPI.getHardwareProfile();
-      if (cachedHwProfile) {
-        const vramText = cachedHwProfile.gpuVramMb ? ` • GPU ${Math.round(cachedHwProfile.gpuVramMb / 1024)}GB VRAM` : '';
-        const hwShort = `${cachedHwProfile.totalRamGb} GB RAM${vramText}`;
-        if (chatHwBadge) chatHwBadge.textContent = hwShort;
-        if (hwSpecsTitle) hwSpecsTitle.textContent = `Detected: ${cachedHwProfile.totalRamGb} GB RAM (${cachedHwProfile.freeRamGb} GB Available)${vramText}`;
-        if (hwSpecsSubtitle) hwSpecsSubtitle.textContent = `${cachedHwProfile.cpuCores} CPU Cores • ${cachedHwProfile.cpuModel}`;
-        if (hwTierBadge) {
-          if (cachedHwProfile.totalRamGb >= 15) {
-            hwTierBadge.textContent = 'HIGH SPEC (14B READY)';
-            hwTierBadge.className = 'model-card-badge green';
-          } else if (cachedHwProfile.totalRamGb >= 10) {
-            hwTierBadge.textContent = 'MID SPEC (7B-8B READY)';
-            hwTierBadge.className = 'model-card-badge green';
-          } else {
-            hwTierBadge.textContent = 'LIGHTWEIGHT (1B-4B READY)';
-            hwTierBadge.className = 'model-card-badge amber';
-          }
-        }
-      }
+      const hw = await window.electronAPI.getHardwareProfile();
+      const vram = hw.gpuVramMb ? ` · ${Math.round(hw.gpuVramMb / 1024)} GB GPU` : '';
+      chatHwBadge.textContent = `${Math.round(hw.totalRamGb)} GB RAM${vram}`;
     } catch (e) {
       console.warn('Failed to get hardware specs:', e);
     }
@@ -2364,169 +2410,171 @@ if (appElement) {
     try {
       const s = await window.electronAPI.llmStatus();
       const catalog = await window.electronAPI.llmGetCatalog();
-      const active = catalog.find(m => m.id === s.activeModelId) || catalog.find(m => m.isDownloaded) || catalog[0];
+      const chosen = catalog.find(m => m.id === s.chatModelId);
+      chatModelDisplayName = chosen?.name || 'AI';
 
       if (chatActiveModelName) {
-        if (active && active.isDownloaded) {
-          chatActiveModelName.innerHTML = `<span style="display: inline-flex; align-items: center; gap: 5px;">${checkmarkSvg} <span>${active.name}</span></span>`;
-        } else {
-          chatActiveModelName.textContent = active ? active.name : 'No Model Loaded';
-        }
+        chatActiveModelName.textContent = !chosen ? 'Choose a model'
+          : !chosen.isDownloaded ? `${chosen.name} · not downloaded`
+          : s.chatStatus === 'loading' ? `${chosen.name} · loading…`
+          : chosen.name;
       }
       if (chatActiveModelDot) {
-        if (s.status === 'ready') {
-          chatActiveModelDot.className = 'status-indicator green';
-        } else if (s.status === 'loading' || s.status === 'downloading') {
-          chatActiveModelDot.className = 'status-indicator loading';
-        } else {
-          chatActiveModelDot.className = 'status-indicator';
-        }
+        chatActiveModelDot.className = !chosen?.isDownloaded ? 'status-indicator'
+          : s.chatStatus === 'ready' ? 'status-indicator green'
+          : s.chatStatus === 'loading' ? 'status-indicator loading'
+          : s.chatStatus === 'error' ? 'status-indicator red'
+          : 'status-indicator';
       }
     } catch (e) {
       console.warn('Failed to refresh active chat model UI:', e);
     }
   };
 
-  // Render Open Models Catalog Modal
-  const renderModelCatalogModal = async () => {
-    if (!window.electronAPI || !modelCatalogContainer) return;
-    try {
-      const catalog = await window.electronAPI.llmGetCatalog();
-      const status = await window.electronAPI.llmStatus();
-      modelCatalogContainer.innerHTML = '';
+  /** Loads the chat model in the background while the chat view is open. */
+  const ensureChatModelLoaded = async () => {
+    if (!window.electronAPI || chatView?.classList.contains('hidden')) return;
+    const s = await window.electronAPI.llmStatus();
+    const catalog = await window.electronAPI.llmGetCatalog();
+    if (s.chatStatus === 'ready' || !catalog.find(m => m.id === s.chatModelId)?.isDownloaded) return;
+    const pending = window.electronAPI.llmChatLoad();
+    await refreshActiveChatModelUI();
+    await pending;
+    await refreshActiveChatModelUI();
+  };
 
-      const tiers: { key: 'lightweight' | 'mid' | 'frontier'; title: string; desc: string }[] = [
-        { key: 'lightweight', title: 'Ultra-Lightweight Tier (1B - 4B)', desc: 'Lightning fast on all computers (4 GB - 8 GB RAM)' },
-        { key: 'mid', title: 'High Performance Tier (7B - 8B)', desc: 'Balanced reasoning & coding (12 GB - 16 GB RAM)' },
-        { key: 'frontier', title: 'Frontier Reasoning Tier (14B)', desc: 'High-density chain-of-thought models (16 GB+ RAM)' }
-      ];
+  // ---- Model picker (shared by AI Chat and dictation cleanup) ----
 
-      tiers.forEach(tier => {
-        const tierModels = catalog.filter(m => m.tier === tier.key);
-        if (tierModels.length === 0) return;
+  let pickerPurpose: LlmPurpose = 'chat';
 
-        const section = document.createElement('div');
-        section.className = 'model-tier-section';
-        section.innerHTML = `
-          <div class="model-tier-title">
-            <span>${tier.title}</span>
-          </div>
-          <p style="font-size: 11px; color: var(--text-secondary); margin: -4px 0 8px 0;">${tier.desc}</p>
-          <div class="model-catalog-grid"></div>
-        `;
+  const refreshAfterModelChange = async () => {
+    await refreshActiveChatModelUI();
+    await updateAiStatusUI();
+    if (settingsModal?.classList.contains('active')) await renderSetupCards();
+    await renderModelPicker();
+  };
 
-        const grid = section.querySelector('.model-catalog-grid');
-
-        tierModels.forEach(m => {
-          const card = document.createElement('div');
-          const isCurrentActive = m.id === status.activeModelId && status.status === 'ready';
-          const isDownloading = status.activeDownloadModelId === m.id;
-
-          card.className = `model-catalog-card ${isCurrentActive ? 'active' : ''} ${!m.isCompatible ? 'incompatible' : ''}`;
-
-          const checkIconHtml = m.isDownloaded ? checkmarkSvg : '';
-
-          let badgeHtml = '';
-          if (isCurrentActive) {
-            badgeHtml = `<span class="model-card-badge green" style="display: inline-flex; align-items: center; gap: 4px;">${checkmarkSvg} ACTIVE</span>`;
-          } else if (m.isDownloaded) {
-            badgeHtml = `<span class="model-card-badge green" style="display: inline-flex; align-items: center; gap: 4px;">${checkmarkSvg} DOWNLOADED</span>`;
-          } else if (isDownloading) {
-            badgeHtml = `<span class="model-card-badge amber">DOWNLOADING ${m.downloadProgress}%</span>`;
-          } else if (m.isCompatible) {
-            badgeHtml = `<span class="model-card-badge green">COMPATIBLE</span>`;
-          } else {
-            badgeHtml = `<span class="model-card-badge red">NEEDS ${m.minTotalRamGb}GB RAM</span>`;
-          }
-
-          let actionBtnHtml = '';
-          if (isCurrentActive) {
-            actionBtnHtml = `<span style="font-size: 11px; color: var(--green); font-weight: 600;">Currently Active</span>`;
-          } else if (isDownloading) {
-            actionBtnHtml = `<button class="btn btn-secondary btn-small" disabled>Downloading (${m.downloadProgress}%)...</button>`;
-          } else if (m.isDownloaded) {
-            actionBtnHtml = `
-              <div style="display: flex; gap: 6px;">
-                <button class="btn btn-primary btn-small btn-load-model" data-id="${m.id}">Select Model</button>
-                <button class="btn btn-secondary btn-small btn-delete-model" data-id="${m.id}" title="Delete file to free space" style="color: var(--red); padding: 4px 8px;">Delete</button>
-              </div>
-            `;
-          } else if (m.isCompatible) {
-            actionBtnHtml = `<button class="btn btn-primary btn-small btn-download-model" data-id="${m.id}">Download (${m.sizeText})</button>`;
-          } else {
-            actionBtnHtml = `<button class="btn btn-secondary btn-small" disabled title="${m.compatibilityReason}">Requires ${m.minTotalRamGb} GB RAM</button>`;
-          }
-
-          card.innerHTML = `
-            <div class="model-card-header">
-              <span class="model-card-title" style="display: inline-flex; align-items: center; gap: 6px;">${m.name} ${checkIconHtml}</span>
-              ${badgeHtml}
-            </div>
-            <div class="model-card-desc">${m.description}</div>
-            <div class="model-card-specs">
-              <span><img src="${downloadIcon}" width="13" height="13" class="spec-icon" /> Size: <b>${m.sizeText}</b></span>
-              <span><img src="${boltIcon}" width="13" height="13" class="spec-icon" /> Memory: <b>${m.ramNeededText}</b></span>
-            </div>
-            <div class="model-card-footer">
-              <div class="model-card-status" style="display: flex; align-items: center; gap: 5px;">
-                ${m.isDownloaded ? checkmarkSvg : `<span class="status-indicator ${m.isCompatible ? '' : 'red'}"></span>`}
-                <span style="color: ${m.isDownloaded ? 'var(--green)' : 'var(--text-secondary)'}; font-weight: ${m.isDownloaded ? '500' : 'normal'};">
-                  ${m.isDownloaded ? 'Downloaded & Ready offline' : m.compatibilityReason}
-                </span>
-              </div>
-              <div class="model-card-actions">${actionBtnHtml}</div>
-            </div>
-          `;
-
-          // Button handlers
-          card.querySelector('.btn-download-model')?.addEventListener('click', async () => {
-            if (llmDownloadBanner) llmDownloadBanner.style.display = 'block';
-            if (llmDownloadTitle) llmDownloadTitle.textContent = `Downloading ${m.name}...`;
-            renderModelCatalogModal();
-            const res = await window.electronAPI.llmDownloadModel(m.id);
-            if (res.success) {
-              await window.electronAPI.llmLoadModel(m.id);
-              await refreshActiveChatModelUI();
-            } else if (res.error && res.error !== 'Download cancelled') {
-              // Keep the banner up long enough to read why it failed.
-              if (llmDownloadTitle) llmDownloadTitle.textContent = `Download failed: ${res.error}`;
-              await new Promise(r => setTimeout(r, 6000));
-            }
-            if (llmDownloadBanner) llmDownloadBanner.style.display = 'none';
-            renderModelCatalogModal();
-          });
-
-          card.querySelector('.btn-load-model')?.addEventListener('click', async () => {
-            const btn = card.querySelector('.btn-load-model') as HTMLButtonElement;
-            if (btn) btn.textContent = 'Loading...';
-            await window.electronAPI.llmLoadModel(m.id);
-            await refreshActiveChatModelUI();
-            renderModelCatalogModal();
-          });
-
-          card.querySelector('.btn-delete-model')?.addEventListener('click', async () => {
-            if (confirm(`Delete downloaded model ${m.name} to free disk space?`)) {
-              await window.electronAPI.llmDeleteModel(m.id);
-              await refreshActiveChatModelUI();
-              renderModelCatalogModal();
-            }
-          });
-
-          grid?.appendChild(card);
-        });
-
-        modelCatalogContainer.appendChild(section);
-      });
-    } catch (e) {
-      console.error('Failed to render model catalog:', e);
+  const useModel = async (purpose: LlmPurpose, modelId: string) => {
+    if (purpose === 'chat') {
+      await window.electronAPI.llmChatSetModel(modelId);
+      await refreshAfterModelChange();
+      void ensureChatModelLoaded();
+    } else {
+      const pending = window.electronAPI.llmLoadModel(modelId);
+      await updateAiStatusUI();
+      await pending;
+      await refreshAfterModelChange();
     }
   };
 
-  chatModelPickerBtn?.addEventListener('click', async () => {
-    await refreshHardwareSpecs();
-    await renderModelCatalogModal();
+  const renderModelPicker = async () => {
+    if (!window.electronAPI || !modelCatalogContainer) return;
+    try {
+      const [catalog, status, hw] = await Promise.all([
+        window.electronAPI.llmGetCatalog(),
+        window.electronAPI.llmStatus(),
+        window.electronAPI.getHardwareProfile(),
+      ]);
+      const purpose = pickerPurpose;
+      if (pickerTitle) pickerTitle.textContent = purpose === 'chat' ? 'Chat model' : 'Dictation cleanup model';
+      if (pickerSub) pickerSub.textContent = `Your PC: ${describeLlmHardware(hw)}`;
+
+      const selectedId = purpose === 'chat' ? status.chatModelId : status.activeModelId;
+      const models = catalog.filter(m => purpose === 'chat' || !isReasoningModel(m.id));
+      const recommendedId = recommendLlm(purpose, models, hw);
+      const fitOrder = { great: 0, slow: 1, 'too-big': 2 };
+      const rows = models
+        .map(m => ({ m, f: assessLlmFit(m, hw) }))
+        .sort((a, b) =>
+          Number(b.m.id === recommendedId) - Number(a.m.id === recommendedId)
+          || fitOrder[a.f.fit] - fitOrder[b.f.fit]
+          || rankFor(purpose, a.m.id) - rankFor(purpose, b.m.id));
+
+      const rowHtml = ({ m, f }: typeof rows[number]) => {
+        const isSelected = m.id === selectedId;
+        const isDownloading = status.activeDownloadModelId === m.id;
+        const otherDownload = !!status.activeDownloadModelId && !isDownloading;
+        const gpuFact = f.fitsOnGpu === null ? ''
+          : f.fitsOnGpu ? '<span class="pick-fact gpu-yes">Fits on graphics card</span>'
+          : '<span class="pick-fact gpu-no">Too big for graphics card</span>';
+
+        let action: string;
+        if (isSelected && m.isDownloaded) action = '<span class="badge badge-on">In use</span>';
+        else if (isDownloading) action = `<button class="btn btn-secondary btn-small" data-dl="${m.id}" disabled>Downloading ${m.downloadProgress}%</button>`;
+        else if (m.isDownloaded) action = `<button class="btn btn-primary btn-small" data-act="use">Use</button>`;
+        else if (f.fit === 'too-big') action = '';
+        else action = `<button class="btn btn-secondary btn-small" data-act="download" ${otherDownload ? 'disabled' : ''}>Download</button>`;
+
+        const remove = m.isDownloaded && !isDownloading
+          ? `<button class="s-link pick-remove" data-act="remove" title="Delete the downloaded file">Remove</button>` : '';
+
+        return `
+          <div class="pick-row${isSelected ? ' is-selected' : ''}${f.fit === 'too-big' ? ' is-too-big' : ''}" data-id="${m.id}" title="${escapeHtml(m.description)}">
+            <div class="pick-main">
+              <div class="pick-name">${escapeHtml(m.name)}${m.id === recommendedId ? ' <span class="badge badge-rec">Recommended</span>' : ''}</div>
+              <div class="pick-facts">
+                <span class="pick-fact fit-${f.fit}"><span class="pick-dot"></span>${fitLabel(f.fit)}</span>
+                ${gpuFact}
+                <span class="pick-fact">${m.isDownloaded ? `Downloaded${remove}` : escapeHtml(m.sizeText.replace('~', '') + ' download')}</span>
+              </div>
+            </div>
+            <div class="pick-actions">${action}</div>
+          </div>`;
+      };
+
+      const usable = rows.filter(r => r.f.fit !== 'too-big' || r.m.id === selectedId);
+      const tooBig = rows.filter(r => r.f.fit === 'too-big' && r.m.id !== selectedId);
+      const wasOpen = !!modelCatalogContainer.querySelector('.pick-more[open]');
+      modelCatalogContainer.innerHTML = `
+        <div class="pick-list">${usable.map(rowHtml).join('')}</div>
+        ${tooBig.length ? `<details class="pick-more"${wasOpen ? ' open' : ''}><summary>${tooBig.length} more ${tooBig.length === 1 ? 'is' : 'are'} too big for this PC</summary><div class="pick-list">${tooBig.map(rowHtml).join('')}</div></details>` : ''}`;
+
+      modelCatalogContainer.querySelectorAll<HTMLElement>('.pick-row').forEach(row => {
+        const m = catalog.find(c => c.id === row.dataset.id)!;
+        row.querySelector('[data-act="use"]')?.addEventListener('click', async (e) => {
+          const btn = e.currentTarget as HTMLButtonElement;
+          btn.textContent = 'Loading…';
+          btn.disabled = true;
+          await useModel(purpose, m.id);
+        });
+        row.querySelector('[data-act="download"]')?.addEventListener('click', async () => {
+          if (llmDownloadBanner) llmDownloadBanner.style.display = 'block';
+          if (llmDownloadTitle) llmDownloadTitle.textContent = `Downloading ${m.name}…`;
+          const pending = window.electronAPI.llmDownloadModel(m.id);
+          await renderModelPicker();
+          const res = await pending;
+          if (res.success) {
+            await useModel(purpose, m.id);
+          } else if (res.error && res.error !== 'Download cancelled') {
+            // Keep the banner up long enough to read why it failed.
+            if (llmDownloadTitle) llmDownloadTitle.textContent = `Download failed: ${res.error}`;
+            await new Promise(r => setTimeout(r, 6000));
+          }
+          if (llmDownloadBanner) llmDownloadBanner.style.display = 'none';
+          await renderModelPicker();
+        });
+        row.querySelector('[data-act="remove"]')?.addEventListener('click', async () => {
+          if (!confirm(`Delete ${m.name} (${m.sizeText.replace('~', '')}) from this PC? You can download it again later.`)) return;
+          await window.electronAPI.llmDeleteModel(m.id);
+          await refreshAfterModelChange();
+        });
+      });
+    } catch (e) {
+      console.error('Failed to render model picker:', e);
+    }
+  };
+
+  const openModelPicker = async (purpose: LlmPurpose) => {
+    pickerPurpose = purpose;
+    await renderModelPicker();
+    const body = chatModelsModal?.querySelector('.chat-models-modal-body');
+    if (body) body.scrollTop = 0;
     chatModelsModal?.classList.add('active');
-  });
+  };
+
+  chatModelPickerBtn?.addEventListener('click', () => openModelPicker('chat'));
+  document.getElementById('settings-chat-model-btn')?.addEventListener('click', () => openModelPicker('chat'));
+  document.getElementById('ai-change-model')?.addEventListener('click', () => openModelPicker('cleanup'));
 
   chatModelsClose?.addEventListener('click', () => chatModelsModal?.classList.remove('active'));
   chatModelsDone?.addEventListener('click', () => chatModelsModal?.classList.remove('active'));
@@ -2552,15 +2600,20 @@ if (appElement) {
     });
 
     // Real-time Chat Token Streaming listener
+    // Tokens arrive faster than the screen refreshes; render the Markdown at most once per frame.
     window.electronAPI.onLlmChatToken((token: string) => {
-      if (currentActiveAssistantBubbleContent) {
-        const indicator = currentActiveAssistantBubbleContent.querySelector('.typing-indicator');
-        if (indicator) indicator.remove();
-        currentActiveAssistantBubbleContent.textContent += token;
+      if (!currentActiveAssistantBubbleContent) return;
+      streamingReplyText += token;
+      if (streamingRenderPending) return;
+      streamingRenderPending = true;
+      requestAnimationFrame(() => {
+        streamingRenderPending = false;
+        if (!currentActiveAssistantBubbleContent) return;
+        currentActiveAssistantBubbleContent.innerHTML = renderChatMarkdown(streamingReplyText);
         if (chatMessagesContainer) {
           chatMessagesContainer.scrollTop = chatMessagesContainer.scrollHeight;
         }
-      }
+      });
     });
   }
 
@@ -2572,7 +2625,7 @@ if (appElement) {
     msgEl.className = `chat-msg ${role}`;
 
     const bubble = document.createElement('div');
-    bubble.className = 'chat-bubble';
+    bubble.className = role === 'assistant' ? 'chat-bubble chat-md' : 'chat-bubble';
 
     if (role === 'assistant' && !content) {
       // Typing indicator placeholder while streaming begins
@@ -2584,6 +2637,9 @@ if (appElement) {
         </div>
       `;
       currentActiveAssistantBubbleContent = bubble;
+    } else if (role === 'assistant') {
+      bubble.innerHTML = renderChatMarkdown(content);
+      bubble.dataset.raw = content;
     } else {
       bubble.textContent = content;
     }
@@ -2592,13 +2648,21 @@ if (appElement) {
     meta.className = 'chat-meta';
     const timeStr = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
     meta.innerHTML = `
-      <span>${role === 'user' ? 'You' : (chatActiveModelName?.textContent || 'AI')} • ${timeStr}</span>
+      <span>${role === 'user' ? 'You' : escapeHtml(chatModelDisplayName)} • ${timeStr}</span>
       ${role === 'assistant' ? `<button class="chat-copy-btn" title="Copy to clipboard">Copy</button>` : ''}
     `;
 
-    meta.querySelector('.chat-copy-btn')?.addEventListener('click', () => {
-      const textToCopy = bubble.textContent || '';
-      if (window.electronAPI) window.electronAPI.copyText(textToCopy);
+    meta.querySelector('.chat-copy-btn')?.addEventListener('click', async () => {
+      // Rich text for apps that accept formatting (Word, email), Markdown for plain-text editors.
+      const raw = bubble.dataset.raw ?? bubble.textContent ?? '';
+      try {
+        await navigator.clipboard.write([new ClipboardItem({
+          'text/plain': new Blob([raw], { type: 'text/plain' }),
+          'text/html': new Blob([bubble.innerHTML], { type: 'text/html' }),
+        })]);
+      } catch {
+        if (window.electronAPI) window.electronAPI.copyText(raw);
+      }
       const copyBtn = meta.querySelector('.chat-copy-btn');
       if (copyBtn) {
         copyBtn.textContent = 'Copied!';
@@ -2634,6 +2698,16 @@ if (appElement) {
     const text = chatInputTextarea.value.trim();
     if (!text) return;
 
+    // No chat model on disk yet: let the user pick one first and keep what they typed.
+    if (window.electronAPI) {
+      const s = await window.electronAPI.llmStatus();
+      const catalog = await window.electronAPI.llmGetCatalog();
+      if (!catalog.find(m => m.id === s.chatModelId)?.isDownloaded) {
+        await openModelPicker('chat');
+        return;
+      }
+    }
+
     if (chatWelcome) chatWelcome.style.display = 'none';
 
     // Append User Message
@@ -2652,7 +2726,9 @@ if (appElement) {
     btnChatSend.disabled = false;
 
     // Append placeholder Assistant Message
+    streamingReplyText = '';
     const assistantBubble = appendChatMessage('assistant', '');
+    void refreshActiveChatModelUI();
 
     try {
       const apiMessages = chatMessages.map(m => ({ role: m.role, content: m.content }));
@@ -2660,7 +2736,9 @@ if (appElement) {
 
       if (response.success && response.text) {
         chatMessages.push({ role: 'assistant', content: response.text, timestamp: Date.now() });
-        assistantBubble.textContent = response.text;
+        currentActiveAssistantBubbleContent = null;
+        assistantBubble.innerHTML = renderChatMarkdown(response.text);
+        assistantBubble.dataset.raw = response.text;
       } else if (!response.success && response.error) {
         assistantBubble.innerHTML = `<span style="color: var(--red);">Error: ${escapeHtml(response.error || 'Failed to generate response')}</span>`;
       }
@@ -2673,6 +2751,7 @@ if (appElement) {
       btnChatSend.title = 'Send message (Enter)';
       btnChatSend.disabled = false;
       currentActiveAssistantBubbleContent = null;
+      void refreshActiveChatModelUI();
     }
   };
 

@@ -269,8 +269,20 @@ let errorMessage = ''
 
 let llama: any = null
 let model: any = null
-let ctx: any = null
+
+// Chat has its own model slot, separate from dictation cleanup, so picking a large chat model never
+// slows dictation. It is loaded only while the chat view is open. When chat and cleanup use the same
+// model, chat borrows the loaded cleanup model instead of loading a second copy.
+export type ChatModelStatus = 'unloaded' | 'loading' | 'ready' | 'error'
+let chatModelId: string = 'qwen3-4b-instruct'
+let chatStatus: ChatModelStatus = 'unloaded'
+let chatError = ''
+let chatOwnModel: any = null
+let chatCtx: any = null
+let chatLoading: Promise<void> | null = null
 let activeChatSession: any = null
+
+const CHAT_SYSTEM_PROMPT = 'You are WaveScribe AI, a helpful, precise, and friendly assistant powered by an open-source model running 100% locally on this device. Use Markdown (headings, bold, lists, code blocks) when it makes an answer easier to read.'
 
 // Dedicated context + sequence for dictation cleanup, created once per loaded model. Creating a
 // context for every dictation cost 100-200ms each time.
@@ -281,6 +293,10 @@ let cleanupQueue: Promise<unknown> = Promise.resolve()
 /** Selects which model initLlm() should prefer (e.g. the user's last choice from a previous run). */
 export function setPreferredModel(modelId: string): void {
     if (OPEN_MODELS.some(m => m.id === modelId)) activeModelId = modelId
+}
+
+export function getCleanupModelId(): string {
+    return activeModelId
 }
 
 export function getModelDir(): string {
@@ -336,6 +352,9 @@ export function getLlmStatus(): {
     loadedBytes: number
     totalBytes: number
     error: string
+    chatModelId: string
+    chatStatus: ChatModelStatus
+    chatError: string
 } {
     return {
         status,
@@ -344,7 +363,10 @@ export function getLlmStatus(): {
         progress: downloadProgress,
         loadedBytes: downloadLoadedBytes,
         totalBytes: downloadTotalBytes,
-        error: errorMessage
+        error: errorMessage,
+        chatModelId,
+        chatStatus,
+        chatError
     }
 }
 
@@ -527,6 +549,9 @@ export function deleteModel(modelId: string): boolean {
     if (activeModelId === modelId) {
         disposeLlm()
     }
+    if (chatModelId === modelId) {
+        unloadChatModel()
+    }
     const modelPath = getModelPath(meta.filename)
     try {
         if (fs.existsSync(modelPath)) fs.unlinkSync(modelPath)
@@ -553,10 +578,7 @@ export async function loadModel(modelId: string): Promise<void> {
         errorMessage = ''
         activeModelId = modelId
 
-        const { getLlama } = await import('node-llama-cpp')
-        llama = await getLlama()
-        model = await llama.loadModel({ modelPath: getModelPath(meta.filename) })
-        ctx = await model.createContext({ contextSize: 4096, sequences: 4 })
+        model = await (await getLlamaInstance()).loadModel({ modelPath: getModelPath(meta.filename) })
 
         status = 'ready'
         // Pay the one-time context/kernel setup now (in the background) instead of during the
@@ -569,6 +591,14 @@ export async function loadModel(modelId: string): Promise<void> {
     }
 }
 
+async function getLlamaInstance(): Promise<any> {
+    if (!llama) {
+        const { getLlama } = await import('node-llama-cpp')
+        llama = await getLlama()
+    }
+    return llama
+}
+
 async function warmUpCleanup(): Promise<void> {
     if (isReasoningModel()) return
     try {
@@ -579,11 +609,9 @@ async function warmUpCleanup(): Promise<void> {
 }
 
 export async function initLlm(onDownloadProgress?: (progress: { modelId: string; percent: number; loadedBytes: number; totalBytes: number }) => void): Promise<void> {
-    // Prefer the model already selected, then any downloaded model, then the default.
-    const downloaded = isModelDownloaded(activeModelId)
-        ? OPEN_MODELS.find(m => m.id === activeModelId)
-        : OPEN_MODELS.find(m => isModelDownloaded(m.id))
-    const target = downloaded ? downloaded.id : activeModelId
+    // Always the cleanup model itself: falling back to "any downloaded model" could pick a large
+    // chat model and make every dictation slow.
+    const target = activeModelId
 
     // Only download when the caller asked for it (the explicit Download button).
     if (!isModelDownloaded(target) && onDownloadProgress) {
@@ -698,36 +726,94 @@ async function reformatTextNow(rawText: string, surroundingContext?: string): Pr
 
 let activeChatAbortController: AbortController | null = null
 
+/** Selects the chat model. A different model replaces the loaded one on the next loadChatModel(). */
+export function setChatModel(modelId: string): void {
+    if (!OPEN_MODELS.some(m => m.id === modelId) || modelId === chatModelId) return
+    unloadChatModel()
+    chatModelId = modelId
+}
+
+export function getChatModelId(): string {
+    return chatModelId
+}
+
+/** Loads the chat model (or borrows the cleanup model when it is the same one). Safe to call repeatedly. */
+export function loadChatModel(): Promise<void> {
+    if (chatStatus === 'ready' && chatCtx && !chatCtx.disposed) return Promise.resolve()
+    if (!chatLoading) {
+        chatLoading = loadChatModelNow().finally(() => { chatLoading = null })
+    }
+    return chatLoading
+}
+
+async function loadChatModelNow(): Promise<void> {
+    const meta = OPEN_MODELS.find(m => m.id === chatModelId)
+    if (!meta) throw new Error(`Model not found: ${chatModelId}`)
+    if (!isModelDownloaded(chatModelId)) throw new Error(`${meta.name} is not downloaded yet.`)
+
+    const requestedId = chatModelId
+    chatStatus = 'loading'
+    chatError = ''
+    try {
+        let source = model
+        if (!(requestedId === activeModelId && status === 'ready' && model)) {
+            chatOwnModel = await (await getLlamaInstance()).loadModel({ modelPath: getModelPath(meta.filename) })
+            source = chatOwnModel
+        }
+        chatCtx = await source.createContext({ contextSize: 4096 })
+        // The user picked another model while this one was loading.
+        if (requestedId !== chatModelId) {
+            unloadChatModel()
+            return loadChatModel()
+        }
+        chatStatus = 'ready'
+    } catch (err: any) {
+        unloadChatModel()
+        chatStatus = 'error'
+        chatError = err?.message || String(err)
+        throw err
+    }
+}
+
+/** Frees the chat model's memory. The conversation is replayed into a new session on the next message. */
+export function unloadChatModel(): void {
+    abortChat()
+    try { activeChatSession?.dispose() } catch { }
+    try { chatCtx?.dispose() } catch { }
+    try { chatOwnModel?.dispose() } catch { }
+    activeChatSession = null
+    chatCtx = null
+    chatOwnModel = null
+    chatStatus = 'unloaded'
+    chatError = ''
+}
+
 export async function chatStream(
     messages: { role: 'user' | 'assistant' | 'system'; content: string }[],
     onToken: (token: string) => void,
     signal?: { aborted: boolean }
 ): Promise<string> {
-    if (status !== 'ready' || !model) {
-        throw new Error('No LLM model is currently loaded.')
-    }
+    await loadChatModel()
 
     const { LlamaChatSession } = await import('node-llama-cpp')
 
-    // Ensure context exists and has available sequences
-    if (!ctx || ctx.disposed) {
-        ctx = await model.createContext({ contextSize: 4096, sequences: 4 })
-    }
-
     if (!activeChatSession) {
-        let seq: any = null
-        try {
-            seq = ctx.getSequence()
-        } catch (seqErr) {
-            try { ctx?.dispose() } catch { }
-            ctx = await model.createContext({ contextSize: 4096, sequences: 4 })
-            seq = ctx.getSequence()
-        }
-
         activeChatSession = new LlamaChatSession({
-            contextSequence: seq,
-            systemPrompt: 'You are WaveScribe AI, a helpful, precise, and friendly assistant powered by an open-source model running 100% locally on this device.'
+            contextSequence: chatCtx.getSequence(),
+            systemPrompt: CHAT_SYSTEM_PROMPT,
+            // The chat context has one sequence; it must be freed when Clear disposes the session.
+            autoDisposeSequence: true
         })
+        // After an unload or a model switch, restore the earlier turns so the conversation continues.
+        const earlier = messages.slice(0, -1).filter(m => m.role !== 'system')
+        if (earlier.length > 0) {
+            activeChatSession.setChatHistory([
+                { type: 'system', text: CHAT_SYSTEM_PROMPT },
+                ...earlier.map(m => m.role === 'user'
+                    ? { type: 'user', text: m.content }
+                    : { type: 'model', response: [m.content] })
+            ])
+        }
     }
 
     activeChatAbortController = new AbortController()
@@ -763,10 +849,7 @@ export async function chatStream(
 }
 
 export function clearChat(): void {
-    if (activeChatAbortController) {
-        try { activeChatAbortController.abort() } catch { }
-        activeChatAbortController = null
-    }
+    abortChat()
     if (activeChatSession) {
         try { activeChatSession.dispose() } catch { }
         activeChatSession = null
@@ -781,13 +864,10 @@ export function abortChat(): void {
 }
 
 export function disposeLlm(): void {
+    // Chat may be borrowing the cleanup model; it reloads on its own the next time it is used.
+    if (chatCtx && !chatOwnModel) unloadChatModel()
     resetCleanupContext()
-    try { activeChatSession?.dispose() } catch { }
-    try { ctx?.dispose() } catch { }
     try { model?.dispose() } catch { }
-    activeChatSession = null
-    ctx = null
     model = null
-    llama = null
     status = 'not-downloaded'
 }

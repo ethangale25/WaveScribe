@@ -1,4 +1,4 @@
-import { app, BrowserWindow, globalShortcut, ipcMain, clipboard, Menu, screen, Rectangle, Notification, nativeImage, Tray, protocol } from 'electron'
+import { app, BrowserWindow, globalShortcut, ipcMain, clipboard, Menu, screen, Rectangle, Notification, nativeImage, Tray, protocol, shell } from 'electron'
 import path from 'path'
 import { fileURLToPath } from 'url'
 import fs from 'fs'
@@ -17,9 +17,12 @@ import {
     clearChat,
     abortChat,
     isModelDownloaded,
-    OPEN_MODELS,
     setPreferredModel,
-    cancelDownload
+    cancelDownload,
+    setChatModel,
+    loadChatModel,
+    unloadChatModel,
+    getCleanupModelId
 } from './llm'
 import { captureContext } from './context-capture'
 import { sendCtrlV, getCursorPosition, isKeyDown } from './win32'
@@ -219,8 +222,10 @@ function createWindow() {
     const iconPath = getAppIconPath();
     const appIcon = getAppIcon();
 
-    const windowWidth = 550
-    const windowHeight = 600
+    // Roomy by default (Settings has a lot to show), but never larger than a small or scaled screen.
+    const workArea = (testDisplay ?? screen.getPrimaryDisplay()).workArea
+    const windowWidth = Math.min(680, Math.round(workArea.width * 0.9))
+    const windowHeight = Math.min(800, Math.round(workArea.height * 0.92))
     const testPosition = testDisplay ? {
         x: Math.round(testDisplay.workArea.x + (testDisplay.workArea.width - windowWidth) / 2),
         y: Math.round(testDisplay.workArea.y + (testDisplay.workArea.height - windowHeight) / 2),
@@ -230,8 +235,8 @@ function createWindow() {
         ...testPosition,
         width: windowWidth,
         height: windowHeight,
-        minWidth: 450,
-        minHeight: 540,
+        minWidth: Math.min(480, windowWidth),
+        minHeight: Math.min(560, windowHeight),
         transparent: true,
         icon: iconPath || appIcon,
         webPreferences: {
@@ -242,6 +247,12 @@ function createWindow() {
         // frameless or modern visual
         titleBarStyle: 'hidden',
         show: false,
+    })
+
+    // Links in AI chat replies open in the default browser, never inside the app.
+    mainWindow.webContents.setWindowOpenHandler(({ url }) => {
+        if (/^https?:\/\//i.test(url)) shell.openExternal(url)
+        return { action: 'deny' }
     })
 
     if (iconPath && mainWindow.setIcon) {
@@ -341,9 +352,11 @@ app.whenReady().then(async () => {
     // Auto-init LLM if enabled and model is already downloaded
     const savedLlm = store.get('llmModelId') as string | undefined
     if (savedLlm) setPreferredModel(savedLlm)
+    // Before chat had its own model, the chat picker set llmModelId; carry that choice over.
+    const savedChat = (store.get('chatModelId') as string | undefined) ?? savedLlm
+    if (savedChat) setChatModel(savedChat)
     const aiEnabled = store.get('aiReformat', false)
-    const hasDownloaded = OPEN_MODELS.some(m => isModelDownloaded(m.id))
-    if (aiEnabled && hasDownloaded) {
+    if (aiEnabled && isModelDownloaded(getCleanupModelId())) {
         try {
             await initLlm()
             console.log('[LLM] Auto-initialized successfully')
@@ -824,6 +837,26 @@ ipcMain.handle('llm-chat-abort', () => {
 
 ipcMain.handle('llm-chat-clear', () => {
     clearChat();
+    return { success: true };
+});
+
+ipcMain.handle('llm-chat-set-model', (_event, modelId: string) => {
+    setChatModel(modelId);
+    store.set('chatModelId', modelId);
+    return { success: true };
+});
+
+ipcMain.handle('llm-chat-load', async () => {
+    try {
+        await loadChatModel();
+        return { success: true };
+    } catch (err: any) {
+        return { success: false, error: err.message || String(err) };
+    }
+});
+
+ipcMain.handle('llm-chat-unload', () => {
+    unloadChatModel();
     return { success: true };
 });
 

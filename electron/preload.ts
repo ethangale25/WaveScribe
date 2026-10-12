@@ -35,6 +35,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
     llmChatSend: (messages: { role: 'user' | 'assistant' | 'system'; content: string }[]) => ipcRenderer.invoke('llm-chat-send', { messages }),
     llmChatAbort: () => ipcRenderer.invoke('llm-chat-abort'),
     llmChatClear: () => ipcRenderer.invoke('llm-chat-clear'),
+    llmChatSetModel: (modelId: string) => ipcRenderer.invoke('llm-chat-set-model', modelId),
+    llmChatLoad: () => ipcRenderer.invoke('llm-chat-load'),
+    llmChatUnload: () => ipcRenderer.invoke('llm-chat-unload'),
     captureContext: () => ipcRenderer.invoke('capture-context'),
     showNotification: (title: string, body: string) => ipcRenderer.invoke('show-notification', { title, body }),
     onLlmDownloadProgress: (callback: (progress: any) => void) => {

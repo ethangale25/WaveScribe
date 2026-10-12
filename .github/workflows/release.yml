@@ -22,6 +22,6 @@ jobs:
       - run: node scripts/copy-ort.mjs
       - run: npx vite build
       # Publishes the installer, its blockmap and latest.yml (which the in-app updater reads).
-      - run: npx electron-builder --publish always -c.publish.provider=github -c.publish.owner=${{ github.repository_owner }} -c.publish.repo=${{ github.event.repository.name }}
+      - run: npx electron-builder --publish always
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

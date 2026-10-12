@@ -1,6 +1,6 @@
 {
   "name": "wavescribe",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "A sleek, Apple-inspired voice dictation application with a modern graphical interface.",
   "main": "dist-electron/main.js",
   "scripts": {
@@ -35,6 +35,11 @@
   "build": {
     "appId": "com.wavescribe.app",
     "productName": "WaveScribe",
+    "publish": {
+      "provider": "github",
+      "owner": "ethangale25",
+      "repo": "WaveScribe"
+    },
     "directories": {
       "output": "release"
     },

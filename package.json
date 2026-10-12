@@ -1,6 +1,6 @@
 {
   "name": "wavescribe",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "description": "A sleek, Apple-inspired voice dictation application with a modern graphical interface.",
   "main": "dist-electron/main.js",
   "scripts": {

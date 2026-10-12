@@ -24,6 +24,7 @@ import {
 import { captureContext } from './context-capture'
 import { sendCtrlV, getCursorPosition, isKeyDown } from './win32'
 import { mainKeyVirtualCode } from './hotkey'
+import { initAutoUpdate } from './updater'
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
@@ -335,6 +336,7 @@ app.whenReady().then(async () => {
     const appIcon = getAppIcon()
     createWindow()
     createTray(appIcon)
+    initAutoUpdate()
 
     // Auto-init LLM if enabled and model is already downloaded
     const savedLlm = store.get('llmModelId') as string | undefined

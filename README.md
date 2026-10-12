@@ -19,6 +19,8 @@ on your machine; no audio leaves it.
 
 ## Develop
 
+Double-click `run.bat` (installs on first run, then starts the app), or:
+
 ```
 npm install
 npm run dev        # Vite + Electron
@@ -30,6 +32,18 @@ npx tsc --noEmit   # typecheck
 ```
 npm run build      # vite build + electron-builder (NSIS installer in release/)
 ```
+
+## Releasing
+
+Push a version tag and GitHub Actions builds the installer and publishes it to GitHub Releases:
+
+```
+# bump "version" in package.json first
+git tag v1.0.1 && git push origin v1.0.1
+```
+
+Installed copies check Releases every few hours, download updates in the background and install
+them when the app quits (`electron/updater.ts`; skipped in dev).
 
 ## How dictation works
 

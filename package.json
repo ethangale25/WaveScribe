@@ -38,7 +38,8 @@
     "publish": {
       "provider": "github",
       "owner": "ethangale25",
-      "repo": "WaveScribe"
+      "repo": "WaveScribe",
+      "releaseType": "release"
     },
     "directories": {
       "output": "release"

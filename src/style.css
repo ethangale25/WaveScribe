@@ -2148,7 +2148,7 @@ body.mini-mode #island-dot {
   border-radius: 8px;
 }
 
-.pick-remove {
+.pick-fact .pick-remove {
   padding: 0 4px;
   font-size: 11.5px;
   font-weight: 500;
@@ -2157,7 +2157,7 @@ body.mini-mode #island-dot {
   text-underline-offset: 2px;
 }
 
-.pick-remove:hover:not(:disabled) {
+.pick-fact .pick-remove:hover:not(:disabled) {
   color: var(--red);
   background: none;
 }
@@ -2531,51 +2531,194 @@ body.mini-mode #island-dot {
   transform: rotate(90deg);
 }
 
-/* Setup cards */
-.setup-list {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
+/* Preset switch (Fast / Balanced / Precise) in the Models header */
+.seg {
+  display: inline-flex;
+  padding: 2px;
+  gap: 2px;
+  border-radius: 999px;
+  background: rgba(128, 128, 128, 0.12);
 }
 
-.setup-card {
-  background: var(--bg-color);
-  border: 1px solid rgba(128, 128, 128, 0.22);
-  border-radius: 12px;
-  padding: 12px 14px;
-  transition: border-color 0.2s ease, box-shadow 0.2s ease;
+.seg-btn {
+  position: relative;
+  border: none;
+  background: none;
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: 11.5px;
+  font-weight: 600;
+  padding: 4px 11px;
+  border-radius: 999px;
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease;
 }
 
-.setup-card:hover:not(.is-unavailable) {
-  border-color: rgba(128, 128, 128, 0.5);
-}
-
-.setup-card.is-active {
-  border-color: var(--btn-bg);
-  box-shadow: 0 0 0 1px var(--btn-bg) inset;
-}
-
-.setup-card.is-unavailable {
-  opacity: 0.6;
-}
-
-.setup-top {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.setup-name {
-  font-size: 14px;
-  font-weight: 700;
+.seg-btn:hover:not(:disabled):not(.is-active) {
   color: var(--text-primary);
 }
 
-.setup-delay {
-  margin-left: auto;
-  font-size: 12px;
+.seg-btn.is-active {
+  background: var(--btn-bg);
+  color: #fff;
+}
+
+.seg-btn:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+/* A small dot marks the preset recommended for this PC. */
+.seg-btn.is-rec::after {
+  content: '';
+  position: absolute;
+  top: 3px;
+  right: 4px;
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: var(--btn-bg);
+}
+
+.seg-btn.is-rec.is-active::after {
+  background: #fff;
+}
+
+.seg-btn.is-busy {
+  animation: segBusy 1s ease-in-out infinite;
+}
+
+@keyframes segBusy {
+  50% { opacity: 0.55; }
+}
+
+/* Model rows: icon, what it is, which model, its status, and a chevron into the picker */
+.m-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  box-sizing: border-box;
+  padding: 11px 14px;
+  border: none;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.15s ease;
+}
+
+.m-row:hover {
+  background: rgba(128, 128, 128, 0.07);
+}
+
+.m-row:focus-visible {
+  outline: 2px solid var(--btn-bg);
+  outline-offset: -2px;
+}
+
+.m-row-plain {
+  justify-content: space-between;
+  padding: 10px 14px;
+}
+
+.m-icon {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  border-radius: 8px;
+  background: rgba(43, 85, 245, 0.14);
+  color: var(--btn-bg);
+}
+
+.m-icon svg {
+  width: 17px;
+  height: 17px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.m-text {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  flex: 1;
+  min-width: 0;
+}
+
+.m-label {
+  font-size: 11px;
   color: var(--text-secondary);
-  font-variant-numeric: tabular-nums;
+}
+
+.m-value {
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.m-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex: none;
+  font-size: 11.5px;
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+
+.m-status::before {
+  content: '';
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.m-status:empty {
+  display: none;
+}
+
+.m-status.tone-ok {
+  color: #22c55e;
+}
+
+.m-status.tone-busy {
+  color: var(--btn-bg);
+}
+
+.m-status.tone-busy::before {
+  animation: segBusy 1s ease-in-out infinite;
+}
+
+.m-status.tone-warn {
+  color: var(--yellow);
+}
+
+.m-status.tone-off {
+  color: var(--text-secondary);
+}
+
+/* The switch must keep its size; the flex row would otherwise squeeze it under the chevron. */
+.m-row .switch {
+  flex: none;
+}
+
+.m-chev {
+  flex: none;
+  font-size: 18px;
+  line-height: 1;
+  color: var(--text-secondary);
+  opacity: 0.7;
 }
 
 .badge {
@@ -2596,43 +2739,6 @@ body.mini-mode #island-dot {
   color: #22c55e;
 }
 
-.setup-tag {
-  margin-top: 4px;
-  font-size: 12.5px;
-  color: var(--text-primary);
-}
-
-.setup-meta {
-  margin-top: 2px;
-  font-size: 11.5px;
-  color: var(--text-secondary);
-}
-
-.setup-foot {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-  margin-top: 10px;
-}
-
-.setup-fit {
-  font-size: 11px;
-  color: var(--text-secondary);
-}
-
-.setup-fit.fit-great {
-  color: #22c55e;
-}
-
-.setup-fit.fit-unavailable {
-  color: var(--yellow);
-}
-
-.setup-foot .btn {
-  min-width: 78px;
-}
-
 /* Settings buttons: compact, not the full-width pills used on the main screen */
 .settings-modal .btn {
   width: auto;
@@ -2650,7 +2756,6 @@ body.mini-mode #island-dot {
   font-size: 14px;
 }
 
-.settings-modal .setup-foot .btn,
 .settings-modal .s-row .btn {
   border-radius: 8px;
 }

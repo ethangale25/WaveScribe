@@ -242,25 +242,40 @@ const LLMS = [
     llm('llama-3.2-1b', '1B', 0.8), llm('qwen-2.5-1.5b', '1.5B', 1), llm('qwen3-4b-instruct', '4B', 2.4),
     llm('llama-3.1-8b', '8B', 4.9), llm('qwen-2.5-14b', '14B', 9), llm('deepseek-r1-14b', '14B', 9),
 ];
+const free = (freeRamGb: number, freeVramGb: number | null, loaded: any[] = []) => ({ freeRamGb, freeVramGb, loaded });
 
-test('llm fit: a model that fits in graphics memory runs great', () => {
-    const fit = assessLlmFit(llm('llama-3.1-8b', '8B', 4.9), { totalRamGb: 32, gpuVramMb: 16384 });
+test('llm fit: a model that fits in free graphics memory runs great', () => {
+    const fit = assessLlmFit(llm('llama-3.1-8b', '8B', 4.9), 'chat', free(20, 14));
     assert.equal(fit.fit, 'great');
     assert.equal(fit.fitsOnGpu, true);
 });
 
-test('llm fit: large models without room on the GPU are slow, or too big for memory', () => {
-    const hw = { totalRamGb: 16, gpuVramMb: 4096 };
-    assert.equal(assessLlmFit(llm('llama-3.1-8b', '8B', 4.9), hw).fit, 'slow');
-    assert.equal(assessLlmFit(llm('qwen-2.5-14b', '14B', 9), { totalRamGb: 8, gpuVramMb: null }).fit, 'too-big');
-    assert.equal(assessLlmFit(llm('qwen3-4b-instruct', '4B', 2.4), { totalRamGb: 8, gpuVramMb: null }).fitsOnGpu, null);
+test('llm fit: judged on memory that is free now, not the totals', () => {
+    // A 16 GB card with only 3 GB free cannot hold an 8B model; it falls back to the slower CPU.
+    assert.equal(assessLlmFit(llm('llama-3.1-8b', '8B', 4.9), 'chat', free(20, 3)).fit, 'slow');
+    // With little RAM free as well, it does not fit at all.
+    assert.equal(assessLlmFit(llm('qwen-2.5-14b', '14B', 9), 'chat', free(6, null)).fit, 'too-big');
+    assert.equal(assessLlmFit(llm('qwen3-4b-instruct', '4B', 2.4), 'chat', free(8, null)).fitsOnGpu, null);
+});
+
+test('llm fit: switching counts the memory the current model would free', () => {
+    const loaded = [{ slot: 'chat', id: 'qwen-2.5-7b', gb: 5.5, onGpu: true }];
+    // 3 GB free plus the 5.5 GB the current chat model releases is enough for the 8B model.
+    assert.equal(assessLlmFit(llm('llama-3.1-8b', '8B', 4.9), 'chat', free(20, 3, loaded)).fit, 'great');
+    // The cleanup slot gets nothing back from the chat model.
+    assert.equal(assessLlmFit(llm('llama-3.1-8b', '8B', 4.9), 'cleanup', free(20, 3, loaded)).fit, 'slow');
+});
+
+test('llm fit: a model already loaded for the other job is shared, so it needs nothing extra', () => {
+    const loaded = [{ slot: 'cleanup', id: 'qwen3-4b-instruct', gb: 3.2, onGpu: true }];
+    assert.equal(assessLlmFit(llm('qwen3-4b-instruct', '4B', 2.4), 'chat', free(1, 0.1, loaded)).fit, 'great');
 });
 
 test('llm recommend: chat gets the biggest model that runs great, never a reasoning model', () => {
-    assert.equal(recommendLlm('chat', LLMS, { totalRamGb: 64, gpuVramMb: 24576 }), 'qwen-2.5-14b');
-    assert.equal(recommendLlm('chat', LLMS, { totalRamGb: 16, gpuVramMb: null }), 'qwen3-4b-instruct');
+    assert.equal(recommendLlm('chat', LLMS, free(40, 22)), 'qwen-2.5-14b');
+    assert.equal(recommendLlm('chat', LLMS, free(12, null)), 'qwen3-4b-instruct');
 });
 
 test('llm recommend: cleanup sticks to the tested small model even on a big GPU', () => {
-    assert.equal(recommendLlm('cleanup', LLMS, { totalRamGb: 64, gpuVramMb: 24576 }), 'qwen3-4b-instruct');
+    assert.equal(recommendLlm('cleanup', LLMS, free(40, 22)), 'qwen3-4b-instruct');
 });

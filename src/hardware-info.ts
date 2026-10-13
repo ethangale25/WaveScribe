@@ -30,15 +30,3 @@ export function getHardwareInfo(): Promise<HardwareInfo> {
     }
     return cached;
 }
-
-/** One line for the Settings screen, e.g. "32 GB RAM · 16 cores · NVIDIA GeForce RTX 4090 (16 GB)". */
-export function describeHardware(hw: HardwareInfo): string {
-    const parts = [`${Math.round(hw.totalRamGb)} GB RAM`, `${hw.cpuCores} cores`];
-    if (hw.hasWebGpu) {
-        const mem = hw.gpuVramMb ? ` (${Math.round(hw.gpuVramMb / 1024)} GB)` : '';
-        parts.push(`${hw.gpuName || 'GPU'}${mem}`);
-    } else {
-        parts.push('No GPU acceleration');
-    }
-    return parts.join(' · ');
-}

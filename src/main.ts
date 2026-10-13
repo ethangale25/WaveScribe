@@ -1,13 +1,13 @@
 import './style.css'
 import { startRecording, stopRecordingDirect, decodeAudioBuffer, setAudioDevice, getVisualizerData, applyVAD } from './audio';
-import { getHardwareInfo, describeHardware } from './hardware-info';
-import { buildSetups, recommendDevice, defaultCpuThreads, SpeedSample, Setup } from './setups';
+import { getHardwareInfo } from './hardware-info';
+import { buildSetups, recommendDevice, defaultCpuThreads, modelFamily, SpeedSample, Setup } from './setups';
 import { runSpeedTest, benchCpuThreads } from './speedtest';
 import { DEFAULT_MODEL_ID, MODEL_VRAM_MB, MODEL_DETAILS, isHfModelDownloaded } from './models';
 import { escapeHtml, removeFillers, applyDictionary, applyAutoFormatting, countWords } from './postprocess';
 import { loadModel, transcribeAudio, isModelLoaded, getCurrentDevice, StreamingTranscriptionSession } from './transcribe';
 import { initDiagnostics } from './diagnostics';
-import { assessLlmFit, fitLabel, isReasoningModel, rankFor, recommendLlm, LlmPurpose } from './llm-fit';
+import { assessLlmFit, assessSpeechFit, fitLabel, isReasoningModel, rankFor, recommendLlm, LlmFit, LlmPurpose, MemorySnapshot } from './llm-fit';
 import { renderChatMarkdown } from './chat-markdown';
 // @ts-ignore
 import micIcon from '../assets/mic.svg'
@@ -71,6 +71,7 @@ declare global {
         chatStatus: 'unloaded' | 'loading' | 'ready' | 'error'
         chatError: string
       }>
+      llmMemoryState: () => Promise<{ freeRamGb: number; totalRamGb: number; freeVramGb: number | null; totalVramGb: number | null; loaded: { slot: 'cleanup' | 'chat'; id: string; gb: number; onGpu: boolean }[] }>
       llmGetCatalog: () => Promise<Array<{
         id: string
         name: string
@@ -283,16 +284,42 @@ if (appElement) {
 
           <section class="s-section">
             <div class="s-head">
-              <h3>Setup</h3>
-              <button class="s-link" id="btn-speed-test">Test my PC</button>
+              <h3>Models</h3>
+              <div class="seg" id="setup-cards" role="group" aria-label="Preset"></div>
             </div>
-            <p class="s-sub" id="hw-summary">Checking your PC…</p>
-            <div class="setup-list" id="setup-cards"></div>
-            <p class="s-note" id="speed-test-result" style="display: none;"></p>
+            <input type="hidden" id="setting-model" value="">
+            <div class="s-card">
+              <button class="m-row" id="row-speech" type="button">
+                <span class="m-icon"><svg viewBox="0 0 24 24"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5.5 11a6.5 6.5 0 0 0 13 0M12 17.5V21"/></svg></span>
+                <span class="m-text"><span class="m-label">Voice to text</span><span class="m-value" id="speech-model-name">…</span></span>
+                <span class="m-status" id="speech-model-status"></span>
+                <span class="m-chev">›</span>
+              </button>
+              <div id="settings-model-progress" class="s-progress" style="display: none;">
+                <div class="s-progress-text"><span id="settings-model-progress-text">Downloading…</span><span id="settings-model-progress-pct">0%</span></div>
+                <div class="progress-bar-track"><div id="settings-model-progress-fill" class="progress-bar-fill" style="width: 0%;"></div></div>
+              </div>
+              <div class="m-row" id="row-cleanup" role="button" tabindex="0">
+                <span class="m-icon"><svg viewBox="0 0 24 24"><path d="M4 20h4L19 9l-4-4L4 16v4zM13.5 6.5l4 4"/></svg></span>
+                <span class="m-text"><span class="m-label">Text cleanup</span><span class="m-value" id="cleanup-model-name">…</span></span>
+                <span class="m-status" id="cleanup-model-status"></span>
+                <label class="switch" title="Turn text cleanup on or off"><input type="checkbox" id="setting-ai-reformat"><span class="slider round"></span></label>
+                <span class="m-chev">›</span>
+              </div>
+              <div id="ai-progress-bar" class="s-progress" style="display: none;">
+                <div class="progress-bar-track"><div id="ai-progress-fill" class="progress-bar-fill" style="width: 0%;"></div></div>
+              </div>
+              <button class="m-row" id="row-chat" type="button">
+                <span class="m-icon"><svg viewBox="0 0 24 24"><path d="M5 5h14a1 1 0 0 1 1 1v9a1 1 0 0 1-1 1h-8l-4 3.5V16H5a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1z"/></svg></span>
+                <span class="m-text"><span class="m-label">AI chat</span><span class="m-value" id="chat-model-name">…</span></span>
+                <span class="m-status" id="chat-model-status"></span>
+                <span class="m-chev">›</span>
+              </button>
+            </div>
           </section>
 
           <section class="s-section">
-            <h3>Shortcut</h3>
+            <h3>Dictation</h3>
             <div class="s-card">
               <div class="s-row">
                 <span class="s-label">Shortcut</span>
@@ -313,55 +340,8 @@ if (appElement) {
               </div>
               <small id="hotkey-warning" class="s-warn" style="display: none;">That shortcut is taken by another app.</small>
               <div class="s-row">
-                <span class="s-label">Push to talk<span class="s-hint">Hold to dictate, release to finish</span></span>
+                <span class="s-label">Push to talk</span>
                 <label class="switch"><input type="checkbox" id="setting-push-to-talk"><span class="slider round"></span></label>
-              </div>
-            </div>
-          </section>
-
-          <section class="s-section">
-            <h3>Speech</h3>
-            <div class="s-card">
-              <div class="s-row">
-                <span class="s-label">Model</span>
-                <select id="setting-model" class="s-control">
-                  <optgroup label="Fast">
-                    <option value="onnx-community/moonshine-tiny-ONNX">Moonshine Tiny</option>
-                    <option value="onnx-community/moonshine-base-ONNX">Moonshine Base</option>
-                  </optgroup>
-                  <optgroup label="Whisper">
-                    <option value="Xenova/whisper-tiny.en">Whisper Tiny</option>
-                    <option value="Xenova/whisper-base.en">Whisper Base</option>
-                    <option value="Xenova/whisper-small.en">Whisper Small</option>
-                  </optgroup>
-                  <optgroup label="Most accurate (needs a GPU)">
-                    <option value="distil-whisper/distil-small.en">Distil Small</option>
-                    <option value="distil-whisper/distil-medium.en">Distil Medium</option>
-                    <option value="distil-whisper/distil-large-v3">Distil Large</option>
-                  </optgroup>
-                </select>
-              </div>
-              <div class="s-row s-row-status" id="model-status-card">
-                <span class="s-status">
-                  <span class="status-indicator" id="model-status-badge" style="width: 8px; height: 8px; margin-right: 0;"></span>
-                  <span id="model-status-text">Checking…</span>
-                </span>
-                <span class="s-inline">
-                  <span class="s-hint-inline" id="model-size-badge"></span>
-                  <button class="btn btn-secondary btn-small" id="btn-preload-model" style="display: none;">Download</button>
-                </span>
-              </div>
-              <div id="settings-model-progress" class="s-progress" style="display: none;">
-                <div class="s-progress-text"><span id="settings-model-progress-text">Downloading…</span><span id="settings-model-progress-pct">0%</span></div>
-                <div class="progress-bar-track"><div id="settings-model-progress-fill" class="progress-bar-fill" style="width: 0%;"></div></div>
-              </div>
-              <div class="s-row">
-                <span class="s-label">Processor<span class="s-hint" id="device-hint">&nbsp;</span></span>
-                <select id="setting-compute-device" class="s-control">
-                  <option value="auto">Auto</option>
-                  <option value="cpu">CPU</option>
-                  <option value="webgpu">GPU</option>
-                </select>
               </div>
               <div class="s-row">
                 <span class="s-label">Microphone</span>
@@ -374,7 +354,7 @@ if (appElement) {
             <h3>Text</h3>
             <div class="s-card">
               <div class="s-row">
-                <span class="s-label">Remove filler words<span class="s-hint">um, uh, hmm</span></span>
+                <span class="s-label">Remove filler words</span>
                 <label class="switch"><input type="checkbox" id="setting-filler-words" checked><span class="slider round"></span></label>
               </div>
               <div class="s-row">
@@ -385,49 +365,22 @@ if (appElement) {
                 <span class="s-label">End with a period</span>
                 <label class="switch"><input type="checkbox" id="setting-punctuate" checked><span class="slider round"></span></label>
               </div>
-              <div class="s-row">
-                <span class="s-label">Custom words<span class="s-hint">Fix names and terms it mishears</span></span>
-                <button class="btn btn-secondary btn-small" id="dict-manage-btn">Edit</button>
-              </div>
-              <div class="s-row">
-                <span class="s-label">AI cleanup<span class="s-hint">Local model fixes punctuation. Nothing leaves your PC</span></span>
-                <label class="switch"><input type="checkbox" id="setting-ai-reformat"><span class="slider round"></span></label>
-              </div>
-              <div id="ai-model-status" class="s-row s-row-status">
-                <span class="s-status">
-                  <span class="status-indicator" id="ai-status-dot"></span>
-                  <span id="ai-status-text">Model not downloaded</span>
-                </span>
-                <span class="s-inline">
-                  <button class="btn btn-secondary btn-small" id="ai-download-btn" style="display: none;">Download</button>
-                  <button class="s-link" id="ai-change-model">Change</button>
-                </span>
-              </div>
-              <div id="ai-progress-bar" class="s-progress" style="display: none;">
-                <div class="progress-bar-track"><div id="ai-progress-fill" class="progress-bar-fill" style="width: 0%;"></div></div>
-              </div>
+              <button class="m-row m-row-plain" id="dict-manage-btn" type="button">
+                <span class="s-label">Custom words</span>
+                <span class="m-chev">›</span>
+              </button>
             </div>
           </section>
 
           <section class="s-section">
-            <h3>AI Chat</h3>
+            <h3>General</h3>
             <div class="s-card">
               <div class="s-row">
-                <span class="s-label">Chat model<span class="s-hint" id="chat-model-hint">Loads only while AI Chat is open</span></span>
-                <button class="btn btn-secondary btn-small" id="settings-chat-model-btn">Choose</button>
-              </div>
-            </div>
-          </section>
-
-          <section class="s-section">
-            <h3>App</h3>
-            <div class="s-card">
-              <div class="s-row">
-                <span class="s-label">Play sounds</span>
+                <span class="s-label">Sounds</span>
                 <label class="switch"><input type="checkbox" id="setting-sounds" checked><span class="slider round"></span></label>
               </div>
               <div class="s-row">
-                <span class="s-label">Show notifications</span>
+                <span class="s-label">Notifications</span>
                 <label class="switch"><input type="checkbox" id="setting-notifications" checked><span class="slider round"></span></label>
               </div>
             </div>
@@ -437,15 +390,24 @@ if (appElement) {
             <summary>Advanced</summary>
             <div class="s-card">
               <div class="s-row">
-                <span class="s-label">Compare every model and processor<span class="s-hint">Finds setups that fail on this PC</span></span>
+                <span class="s-label">Voice processor<span class="s-hint" id="device-hint">&nbsp;</span></span>
+                <select id="setting-compute-device" class="s-control">
+                  <option value="auto">Auto</option>
+                  <option value="cpu">CPU</option>
+                  <option value="webgpu">GPU</option>
+                </select>
+              </div>
+              <div class="s-row">
+                <span class="s-label">Speed test</span>
+                <button class="btn btn-secondary btn-small" id="btn-speed-test">Run</button>
+              </div>
+              <div class="s-row">
+                <span class="s-label">Compare all voice models</span>
                 <button class="btn btn-secondary btn-small" id="diag-run-btn">Run</button>
               </div>
             </div>
+            <p class="s-note" id="speed-test-result" style="display: none;"></p>
           </details>
-        </div>
-
-        <div class="modal-footer">
-          <button class="btn btn-primary" id="settings-save">Save</button>
         </div>
       </div>
     </div>
@@ -1225,7 +1187,6 @@ if (appElement) {
   const settingsBtn = document.getElementById('settings-btn');
   const settingsModal = document.getElementById('settings-modal');
   const settingsClose = document.getElementById('settings-close');
-  const settingsSave = document.getElementById('settings-save');
 
   // Input Elements
   const inputHotkeyPreset = document.getElementById('setting-hotkey-preset') as HTMLSelectElement;
@@ -1234,7 +1195,8 @@ if (appElement) {
   const hotkeyWarning = document.getElementById('hotkey-warning');
   const hotkeyHelp = document.getElementById('hotkey-help');
   const inputMicrophone = document.getElementById('setting-microphone') as HTMLSelectElement;
-  const inputModel = document.getElementById('setting-model') as HTMLSelectElement;
+  // The chosen voice model; a hidden field so the speed test and presets can read and set it.
+  const inputModel = document.getElementById('setting-model') as HTMLInputElement;
   const inputFiller = document.getElementById('setting-filler-words') as HTMLInputElement;
   const inputCap = document.getElementById('setting-capitalize') as HTMLInputElement;
   const inputPunct = document.getElementById('setting-punctuate') as HTMLInputElement;
@@ -1247,182 +1209,77 @@ if (appElement) {
 
   // AI Reformatting UI Elements
   const inputAiReformat = document.getElementById('setting-ai-reformat') as HTMLInputElement;
-  const aiStatusDot = document.getElementById('ai-status-dot');
-  const aiStatusText = document.getElementById('ai-status-text');
   const aiProgressBar = document.getElementById('ai-progress-bar');
   const aiProgressFill = document.getElementById('ai-progress-fill');
-  const aiDownloadBtn = document.getElementById('ai-download-btn');
+
+  /** Writes a model row's status: a short word and a coloured dot. */
+  const setRowStatus = (id: string, text: string, tone: 'ok' | 'busy' | 'warn' | 'off') => {
+    const el = document.getElementById(id);
+    if (!el) return;
+    el.className = `m-status tone-${tone}`;
+    el.textContent = text;
+  };
+  const setText = (id: string, text: string) => {
+    const el = document.getElementById(id);
+    if (el) el.textContent = text;
+  };
 
   let cleanupModelIdForUi = '';
 
+  /** Text cleanup and AI chat rows. */
   const updateAiStatusUI = async () => {
     if (!window.electronAPI) return;
-    const [s, catalog, hw] = await Promise.all([
-      window.electronAPI.llmStatus(),
-      window.electronAPI.llmGetCatalog(),
-      window.electronAPI.getHardwareProfile(),
-    ]);
+    const [s, catalog] = await Promise.all([window.electronAPI.llmStatus(), window.electronAPI.llmGetCatalog()]);
     cleanupModelIdForUi = s.activeModelId;
+
     const cleanupModel = catalog.find(m => m.id === s.activeModelId);
-    const name = cleanupModel?.name || 'Model';
+    setText('cleanup-model-name', cleanupModel?.name || 'Choose a model');
+    if (!cleanupModel?.isDownloaded && s.status !== 'downloading') setRowStatus('cleanup-model-status', 'Not downloaded', 'warn');
+    else if (!inputAiReformat.checked) setRowStatus('cleanup-model-status', 'Off', 'off');
+    else if (s.status === 'ready') setRowStatus('cleanup-model-status', 'Ready', 'ok');
+    else if (s.status === 'downloading') setRowStatus('cleanup-model-status', `${s.progress}%`, 'busy');
+    else if (s.status === 'loading') setRowStatus('cleanup-model-status', 'Loading', 'busy');
+    else if (s.status === 'error') setRowStatus('cleanup-model-status', 'Error', 'warn');
+    else setRowStatus('cleanup-model-status', 'Ready', 'ok');
+    if (aiProgressBar && s.status !== 'downloading') aiProgressBar.style.display = 'none';
 
-    // AI Chat section: which model chat uses and how well it runs here.
-    const chatHint = document.getElementById('chat-model-hint');
     const chatModel = catalog.find(m => m.id === s.chatModelId);
-    if (chatHint) {
-      chatHint.textContent = chatModel
-        ? `${chatModel.name} · ${chatModel.isDownloaded ? fitLabel(assessLlmFit(chatModel, hw).fit) : 'not downloaded'}`
-        : 'No model chosen';
-    }
-
-    if (s.status === 'ready') {
-      if (aiStatusDot) aiStatusDot.className = 'status-indicator green';
-      if (aiStatusText) aiStatusText.textContent = `${name} · ready`;
-      if (aiDownloadBtn) aiDownloadBtn.style.display = 'none';
-      if (aiProgressBar) aiProgressBar.style.display = 'none';
-    } else if (s.status === 'downloading') {
-      if (aiStatusDot) aiStatusDot.className = 'status-indicator loading';
-      if (aiStatusText) aiStatusText.textContent = `Downloading ${name}… ${s.progress}%`;
-      if (aiProgressBar) aiProgressBar.style.display = 'block';
-      if (aiProgressFill) aiProgressFill.style.width = s.progress + '%';
-      if (aiDownloadBtn) aiDownloadBtn.style.display = 'none';
-    } else if (s.status === 'loading') {
-      if (aiStatusDot) aiStatusDot.className = 'status-indicator loading';
-      if (aiStatusText) aiStatusText.textContent = `Loading ${name}…`;
-      if (aiDownloadBtn) aiDownloadBtn.style.display = 'none';
-      if (aiProgressBar) aiProgressBar.style.display = 'none';
-    } else if (s.status === 'error') {
-      if (aiStatusDot) aiStatusDot.className = 'status-indicator red';
-      if (aiStatusText) aiStatusText.textContent = 'Error: ' + s.error;
-      if (aiDownloadBtn) {
-        aiDownloadBtn.style.display = 'block';
-        aiDownloadBtn.textContent = 'Retry';
-      }
-      if (aiProgressBar) aiProgressBar.style.display = 'none';
-    } else {
-      // not-downloaded
-      if (cleanupModel?.isDownloaded) {
-        if (aiStatusDot) aiStatusDot.className = 'status-indicator';
-        if (aiStatusText) aiStatusText.textContent = `${name} · loads when AI cleanup is on`;
-        if (aiDownloadBtn) aiDownloadBtn.style.display = 'none';
-      } else {
-        if (aiStatusDot) aiStatusDot.className = 'status-indicator';
-        if (aiStatusText) aiStatusText.textContent = `${name} · not downloaded`;
-        if (aiDownloadBtn) {
-          aiDownloadBtn.style.display = 'block';
-          aiDownloadBtn.textContent = `Download (${(cleanupModel?.sizeText || '~1 GB').replace('~', '')})`;
-        }
-      }
-      if (aiProgressBar) aiProgressBar.style.display = 'none';
-    }
+    setText('chat-model-name', chatModel?.name || 'Choose a model');
+    if (!chatModel?.isDownloaded) setRowStatus('chat-model-status', s.activeDownloadModelId === chatModel?.id ? `${chatModel?.downloadProgress}%` : 'Not downloaded', s.activeDownloadModelId === chatModel?.id ? 'busy' : 'warn');
+    else setRowStatus('chat-model-status', 'Ready', 'ok');
   };
-
-  aiDownloadBtn?.addEventListener('click', async () => {
-    if (aiDownloadBtn) aiDownloadBtn.style.display = 'none';
-    if (aiProgressBar) aiProgressBar.style.display = 'block';
-    if (aiStatusDot) aiStatusDot.className = 'status-indicator loading';
-    if (aiStatusText) aiStatusText.textContent = 'Starting download...';
-    const result = await window.electronAPI.llmInit(true);
-    if (result.success) {
-      await updateAiStatusUI();
-    } else {
-      if (aiStatusDot) aiStatusDot.className = 'status-indicator red';
-      if (aiStatusText) aiStatusText.textContent = 'Error: ' + (result.error || 'Unknown');
-      if (aiDownloadBtn) {
-        aiDownloadBtn.style.display = 'block';
-        aiDownloadBtn.textContent = 'Retry';
-      }
-      if (aiProgressBar) aiProgressBar.style.display = 'none';
-    }
-  });
 
   if (window.electronAPI) {
     window.electronAPI.onLlmDownloadProgress((progress: any) => {
-      // Only the cleanup model's download belongs in this status line (not a chat model's).
+      // Only the cleanup model's download belongs in the cleanup row (not a chat model's).
       if (progress?.modelId && progress.modelId !== cleanupModelIdForUi) return;
       const pct = typeof progress === 'number' ? progress : (progress?.percent ?? 0);
+      if (aiProgressBar) aiProgressBar.style.display = pct >= 100 ? 'none' : 'block';
       if (aiProgressFill) aiProgressFill.style.width = pct + '%';
-      if (aiStatusText) {
-        if (pct >= 100) {
-          aiStatusText.textContent = 'Loading model...';
-        } else {
-          aiStatusText.textContent = `Downloading... ${pct}%`;
-        }
-      }
-      if (aiStatusDot) aiStatusDot.className = 'status-indicator loading';
+      setRowStatus('cleanup-model-status', pct >= 100 ? 'Loading' : `${pct}%`, 'busy');
     });
   }
 
+  /** Voice to text row. */
   const refreshSettingsModelStatus = async () => {
     const selectedModel = inputModel?.value || DEFAULT_MODEL_ID;
-    const details = MODEL_DETAILS[selectedModel] || { name: selectedModel, shortName: selectedModel, sizeText: '~100 MB', approxBytes: 100 * 1024 * 1024 };
-
-    const modelStatusBadge = document.getElementById('model-status-badge');
-    const modelStatusText = document.getElementById('model-status-text');
-    const modelSizeBadge = document.getElementById('model-size-badge');
-    const btnPreloadModel = document.getElementById('btn-preload-model') as HTMLButtonElement;
-
-    if (modelSizeBadge) modelSizeBadge.textContent = details.sizeText;
-
-    // Check download status for all options in select
-    if (inputModel) {
-      for (const opt of Array.from(inputModel.options)) {
-        const optDetails = MODEL_DETAILS[opt.value];
-        const optBaseName = optDetails?.name || opt.value;
-        const optDownloaded = await isHfModelDownloaded(opt.value);
-        if (optDownloaded) {
-          opt.text = `${optBaseName} (Downloaded)`;
-        } else {
-          const size = optDetails?.sizeText ? `~${optDetails.sizeText}` : 'Needs download';
-          opt.text = `${optBaseName} (${size})`;
-        }
-      }
-    }
-
-    const isDownloaded = await isHfModelDownloaded(selectedModel);
-    if (isDownloaded) {
-      if (modelStatusBadge) {
-        modelStatusBadge.className = 'status-indicator green';
-        modelStatusBadge.style.display = 'none';
-      }
-      if (modelStatusText) {
-        modelStatusText.innerHTML = `${checkmarkSvg} <span style="color: var(--green); font-weight: 600; margin-left: 4px;">Downloaded & Cached (Instant Switch)</span>`;
-      }
-      if (btnPreloadModel) btnPreloadModel.style.display = 'none';
-    } else {
-      if (modelStatusBadge) {
-        modelStatusBadge.className = 'status-indicator';
-        modelStatusBadge.style.display = 'inline-block';
-      }
-      if (modelStatusText) {
-        modelStatusText.textContent = `Not Downloaded (${details.sizeText})`;
-        modelStatusText.style.color = 'var(--text-secondary)';
-      }
-      if (btnPreloadModel) {
-        btnPreloadModel.style.display = 'block';
-        btnPreloadModel.textContent = `Pre-download ${details.name} (${details.sizeText})`;
-      }
-    }
+    setText('speech-model-name', MODEL_DETAILS[selectedModel]?.name || selectedModel);
+    const progress = document.getElementById('settings-model-progress');
+    if (progress && progress.style.display === 'block') return; // the progress bar is speaking for it
+    if (isModelLoaded() && currentModelId === selectedModel) setRowStatus('speech-model-status', 'Ready', 'ok');
+    else if (await isHfModelDownloaded(selectedModel)) setRowStatus('speech-model-status', 'Loading', 'busy');
+    else setRowStatus('speech-model-status', 'Not downloaded', 'warn');
   };
 
-  const btnPreloadModel = document.getElementById('btn-preload-model');
-  btnPreloadModel?.addEventListener('click', async () => {
-    const selectedModel = inputModel?.value || DEFAULT_MODEL_ID;
-    if (btnPreloadModel) btnPreloadModel.style.display = 'none';
-    const settingsProgress = document.getElementById('settings-model-progress');
-    if (settingsProgress) settingsProgress.style.display = 'block';
-    await attemptLoadModel(selectedModel);
-    await refreshSettingsModelStatus();
-  });
-
-  // Refresh model status on device/model change
-  inputComputeDevice?.addEventListener('change', () => {
-    refreshSettingsModelStatus();
+  // Refresh model status on device change
+  inputComputeDevice?.addEventListener('change', async () => {
+    await window.electronAPI?.setSetting('computeDevice', inputComputeDevice.value);
     updateDeviceHint();
-  });
-  inputModel?.addEventListener('change', () => {
-    refreshSettingsModelStatus();
-    updateDeviceHint();
+    // Reload the speech model only if the device it runs on actually changes.
+    const newDevice = await resolveDevice(inputModel.value, inputComputeDevice.value);
+    if (!isRecording && !isProcessing && (!isModelLoaded() || newDevice !== getCurrentDevice())) {
+      attemptLoadModel(inputModel.value);
+    }
   });
 
   // Dictionary UI Elements
@@ -1568,11 +1425,6 @@ if (appElement) {
     else hint.textContent = `${deviceLabel(rec.device)} is recommended: ${rec.reason}`;
   };
 
-  let setupDownloadButton: HTMLButtonElement | null = null;
-  window.electronAPI?.onLlmDownloadProgress((p: any) => {
-    if (setupDownloadButton) setupDownloadButton.textContent = p.phase === 'verifying' ? 'Verifying\u2026' : `Downloading ${p.percent}%`;
-  });
-
   const showSetupNote = (text: string) => {
     const note = document.getElementById('speed-test-result');
     if (!note) return;
@@ -1584,36 +1436,34 @@ if (appElement) {
     if (!window.electronAPI || isRecording || isProcessing) return;
     if (needsDownload && !confirm(`${setup.name} uses ${setup.llmModelName} for AI cleanup, a ${llmSize} download. Continue?`)) return;
 
-    button.disabled = true;
+    // The model rows below show download and loading progress while this runs.
+    button.classList.add('is-busy');
+    document.querySelectorAll<HTMLButtonElement>('#setup-cards .seg-btn').forEach(b => { b.disabled = true; });
     try {
       await window.electronAPI.setSetting('model', setup.speechModel);
       await window.electronAPI.setSetting('computeDevice', 'auto');
       await window.electronAPI.setSetting('aiReformat', setup.aiCleanup);
-      // Mirror into the open form so pressing Save afterwards does not undo it.
       inputModel.value = setup.speechModel;
       inputComputeDevice.value = 'auto';
       inputAiReformat.checked = setup.aiCleanup;
+      await refreshSettingsModelStatus();
+      await updateAiStatusUI();
 
       if (setup.aiCleanup && setup.llmModelId) {
         if (needsDownload) {
-          setupDownloadButton = button;
-          button.textContent = 'Downloading\u2026';
           const dl = await window.electronAPI.llmDownloadModel(setup.llmModelId);
-          setupDownloadButton = null;
           if (!dl.success) throw new Error(dl.error || 'Download failed');
         }
-        button.textContent = 'Loading\u2026';
         await window.electronAPI.llmLoadModel(setup.llmModelId);
+        await updateAiStatusUI();
       }
 
-      button.textContent = 'Loading\u2026';
       const device = await resolveDevice(setup.speechModel, 'auto');
       if (!isModelLoaded() || setup.speechModel !== currentModelId || device !== getCurrentDevice()) {
         await attemptLoadModel(setup.speechModel);
       }
       showSetupNote('');
     } catch (err: any) {
-      setupDownloadButton = null;
       showSetupNote(`Could not apply ${setup.name}: ${err?.message || err}`);
     } finally {
       await updateAiStatusUI();
@@ -1623,14 +1473,12 @@ if (appElement) {
     }
   };
 
+  /** Fast / Balanced / Precise: one tap sets the voice model and text cleanup together. */
   const renderSetupCards = async () => {
     const host = document.getElementById('setup-cards');
-    const summary = document.getElementById('hw-summary');
     if (!host) return;
 
     const hw = await getHardwareInfo();
-    if (summary) summary.textContent = describeHardware(hw);
-
     const plan = buildSetups(hw, speedSamples);
     const settings = window.electronAPI ? await window.electronAPI.getSettings() : null;
     const catalog: any[] = window.electronAPI ? await window.electronAPI.llmGetCatalog() : [];
@@ -1644,29 +1492,14 @@ if (appElement) {
         && (!setup.aiCleanup || !settings?.llmModelId || settings.llmModelId === setup.llmModelId);
       const unavailable = setup.fit === 'unavailable';
 
-      const card = document.createElement('div');
-      card.className = 'setup-card' + (isActive ? ' is-active' : '') + (unavailable ? ' is-unavailable' : '');
-      const badge = isActive ? '<span class="badge badge-on">In use</span>'
-        : setup.id === plan.recommendedId ? '<span class="badge badge-rec">Recommended</span>' : '';
-      const meta = [
-        setup.speechModelName,
-        deviceLabel(setup.device),
-        setup.aiCleanup ? `AI: ${setup.llmModelName}` : 'No AI cleanup',
-      ].join(' \u00b7 ');
-      card.innerHTML = `
-        <div class="setup-top">
-          <span class="setup-name">${escapeHtml(setup.name)}</span>${badge}
-          <span class="setup-delay">${escapeHtml(setup.typicalDelay)}</span>
-        </div>
-        <div class="setup-tag">${escapeHtml(setup.tagline)}</div>
-        <div class="setup-meta">${escapeHtml(meta)}${needsDownload ? ` \u00b7 ${escapeHtml(llm.sizeText)} download` : ''}</div>
-        <div class="setup-foot">
-          <span class="setup-fit fit-${setup.fit}">${escapeHtml(setup.fitNote)}</span>
-          <button class="btn btn-small ${isActive ? 'btn-secondary' : 'btn-primary'} setup-apply" ${isActive || unavailable ? 'disabled' : ''}>${isActive ? 'In use' : 'Use'}</button>
-        </div>`;
-      const button = card.querySelector('.setup-apply') as HTMLButtonElement;
-      button.addEventListener('click', () => applySetup(setup, button, llm?.sizeText ?? null, needsDownload));
-      host.appendChild(card);
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'seg-btn' + (isActive ? ' is-active' : '') + (setup.id === plan.recommendedId ? ' is-rec' : '');
+      button.textContent = setup.name;
+      button.disabled = unavailable;
+      button.title = `${setup.tagline} ${setup.typicalDelay}.${setup.id === plan.recommendedId ? ' Recommended for this PC.' : ''}${unavailable ? ` ${setup.fitNote}.` : ''}`;
+      button.addEventListener('click', () => { if (!isActive) applySetup(setup, button, llm?.sizeText ?? null, needsDownload); });
+      host.appendChild(button);
     }
   };
 
@@ -1703,7 +1536,7 @@ if (appElement) {
   });
 
   const loadSettingsAndShow = async () => {
-    await populateMics();
+    let savedMicrophone: string | null = null;
     if (window.electronAPI) {
       const settings = await window.electronAPI.getSettings();
       if (settings) {
@@ -1735,8 +1568,8 @@ if (appElement) {
             hotkeyWarning!.style.display = 'none';
           }
         }
-        if (settings.microphone) inputMicrophone.value = settings.microphone;
-        if (settings.model) inputModel.value = settings.model;
+        savedMicrophone = settings.microphone || null;
+        inputModel.value = settings.model || DEFAULT_MODEL_ID;
 
         // Processor: new profiles default to Auto (the app picks CPU or GPU for the chosen model)
         inputComputeDevice.value = settings.computeDevice ?? 'auto';
@@ -1763,12 +1596,15 @@ if (appElement) {
       }
     }
     updateDashboardUI();
-    await updateAiStatusUI();
-    await refreshSettingsModelStatus();
-    settingsModal?.classList.add('active');
     showSetupNote('');
-    await updateDeviceHint();
-    await renderSetupCards();
+    settingsModal?.classList.add('active');
+    await Promise.all([
+      populateMics().then(() => { if (savedMicrophone) inputMicrophone.value = savedMicrophone; }),
+      updateAiStatusUI(),
+      refreshSettingsModelStatus(),
+      updateDeviceHint(),
+      renderSetupCards(),
+    ]);
   };
 
   settingsBtn?.addEventListener('click', loadSettingsAndShow);
@@ -1804,6 +1640,7 @@ if (appElement) {
       if (group) group.style.display = 'none';
       inputHotkey.value = inputHotkeyPreset.value;
       previousValidHotkey = inputHotkeyPreset.value;
+      void applyHotkey(inputHotkeyPreset.value);
     }
     inputHotkey.style.borderColor = 'var(--border-color)';
     inputHotkey.style.color = 'var(--text-primary)';
@@ -1859,8 +1696,9 @@ if (appElement) {
         previousValidHotkey = hotkeyStr;
 
         stopHotkeyRecording();
+        void applyHotkey(hotkeyStr);
         if (hotkeyHelp) {
-          hotkeyHelp.textContent = "Click 'Record' and press your desired shortcut combo.";
+          hotkeyHelp.textContent = 'Click Record, then press your keys';
           hotkeyHelp.style.color = 'var(--text-secondary)';
         }
       };
@@ -1871,63 +1709,63 @@ if (appElement) {
     }
   });
 
-  // Save changes
-  settingsSave?.addEventListener('click', async () => {
-    // Reset hotkey if user failed to provide one before saving
-    if (recordingHotkey) {
-      stopHotkeyRecording(true);
-    }
+  // Every setting applies the moment it changes; there is no Save button.
 
-    if (window.electronAPI) {
-      const hotkeyResult = await window.electronAPI.setSetting('hotkey', inputHotkey.value);
-      if (hotkeyResult && hotkeyResult.success === false) {
-        inputHotkey.style.borderColor = 'var(--red)';
-        inputHotkey.style.color = 'var(--red)';
-        inputHotkeyPreset.style.borderColor = 'var(--red)';
-        inputHotkeyPreset.style.color = 'var(--red)';
-        hotkeyWarning!.style.display = 'block';
-        // Stop here so user can see what failed instead of closing modal or saving other incomplete state
-        return;
-      }
+  const markHotkey = (ok: boolean) => {
+    const color = ok ? 'var(--text-primary)' : 'var(--red)';
+    const border = ok ? 'var(--border-color)' : 'var(--red)';
+    inputHotkey.style.borderColor = border;
+    inputHotkey.style.color = color;
+    inputHotkeyPreset.style.borderColor = border;
+    inputHotkeyPreset.style.color = color;
+    hotkeyWarning!.style.display = ok ? 'none' : 'block';
+  };
 
+  const applyHotkey = async (hotkey: string) => {
+    if (!window.electronAPI) return;
+    const result = await window.electronAPI.setSetting('hotkey', hotkey);
+    const ok = !(result && result.success === false);
+    markHotkey(ok);
+    if (ok) {
       const hotkeyDisplay = document.getElementById('hotkey-display');
-      if (hotkeyDisplay) hotkeyDisplay.textContent = inputHotkey.value;
+      if (hotkeyDisplay) hotkeyDisplay.textContent = hotkey;
+    }
+  };
 
-      await window.electronAPI.setSetting('microphone', inputMicrophone.value);
+  inputMicrophone?.addEventListener('change', async () => {
+    await window.electronAPI?.setSetting('microphone', inputMicrophone.value);
+    setAudioDevice(inputMicrophone.value === 'default' ? null : inputMicrophone.value);
+  });
 
-      const selectedMic = inputMicrophone.value === 'default' ? null : inputMicrophone.value;
-      setAudioDevice(selectedMic);
+  const bindSwitch = (input: HTMLInputElement, key: string, after?: (on: boolean) => void) => {
+    input?.addEventListener('change', async () => {
+      await window.electronAPI?.setSetting(key, input.checked);
+      after?.(input.checked);
+    });
+  };
+  bindSwitch(inputFiller, 'removeFiller');
+  bindSwitch(inputCap, 'autoCap');
+  bindSwitch(inputPunct, 'autoPunct');
+  bindSwitch(inputPushToTalk, 'pushToTalk');
+  bindSwitch(inputSounds, 'playSounds', (on) => { playSoundsEnabled = on; });
+  bindSwitch(inputNotify, 'showNotify', (on) => { showNotifyEnabled = on; });
 
-      await window.electronAPI.setSetting('model', inputModel.value);
-      await window.electronAPI.setSetting('removeFiller', inputFiller.checked);
-      await window.electronAPI.setSetting('autoCap', inputCap.checked);
-      await window.electronAPI.setSetting('autoPunct', inputPunct.checked);
-      await window.electronAPI.setSetting('playSounds', inputSounds.checked);
-      playSoundsEnabled = inputSounds.checked;
-      await window.electronAPI.setSetting('showNotify', inputNotify.checked);
-      await window.electronAPI.setSetting('pushToTalk', inputPushToTalk.checked);
-      showNotifyEnabled = inputNotify.checked;
-      await window.electronAPI.setSetting('dictionaryPairs', dictionaryPairs);
-
-      await window.electronAPI.setSetting('computeDevice', inputComputeDevice.value);
-
-      // Reload the speech model only if something that affects it changed (or it never loaded).
-      const newDevice = await resolveDevice(inputModel.value, inputComputeDevice.value);
-      if (!isModelLoaded() || inputModel.value !== currentModelId || newDevice !== getCurrentDevice()) {
-        attemptLoadModel(inputModel.value);
-      }
-
-      // AI Reformatting
-      await window.electronAPI.setSetting('aiReformat', inputAiReformat.checked);
-      if (inputAiReformat.checked) {
-        const s = await window.electronAPI.llmStatus();
-        if (s.status !== 'ready' && s.status !== 'downloading' && s.status !== 'loading') {
-          window.electronAPI.llmInit();
-        }
+  inputAiReformat?.addEventListener('change', async () => {
+    if (!window.electronAPI) return;
+    await window.electronAPI.setSetting('aiReformat', inputAiReformat.checked);
+    if (inputAiReformat.checked) {
+      const [s, catalog] = await Promise.all([window.electronAPI.llmStatus(), window.electronAPI.llmGetCatalog()]);
+      if (!catalog.find(m => m.id === s.activeModelId)?.isDownloaded) {
+        // Nothing to turn on yet: let the user pick and download a cleanup model.
+        await openModelPicker('cleanup');
+      } else if (s.status !== 'ready' && s.status !== 'downloading' && s.status !== 'loading') {
+        const loading = window.electronAPI.llmInit();
+        await updateAiStatusUI();
+        await loading;
       }
     }
-
-    settingsModal?.classList.remove('active');
+    await updateAiStatusUI();
+    await renderSetupCards();
   });
 
   if (window.electronAPI) {
@@ -2029,6 +1867,7 @@ if (appElement) {
         else settingsProgressFill.classList.remove('indeterminate');
       }
 
+      setRowStatus('speech-model-status', isCompiling ? 'Loading' : pctStr, 'busy');
       statusMessage!.textContent = isCompiling ? 'Compiling model...' : `Downloading... ${pctStr}`;
       statusDot!.className = 'status-indicator loading';
 
@@ -2201,6 +2040,7 @@ if (appElement) {
   if (window.electronAPI) {
     window.electronAPI.getSettings().then(async (settings) => {
       const modelId = settings?.model ?? DEFAULT_MODEL_ID;
+      inputModel.value = modelId;
 
       // Pre-flight VRAM check: if WebGPU is stored, verify the model+precision
       // actually fits before calling loadModel — the OOM RangeError from ONNX
@@ -2387,13 +2227,6 @@ if (appElement) {
   btnOpenChat?.addEventListener('click', switchToChatView);
   btnChatBack?.addEventListener('click', switchToDictationView);
 
-  const describeLlmHardware = (hw: { totalRamGb: number; gpuVramMb: number | null; gpuName: string | null }) => {
-    const parts = [`${Math.round(hw.totalRamGb)} GB memory`];
-    if (hw.gpuVramMb) parts.push(`${hw.gpuName || 'Graphics card'} (${Math.round(hw.gpuVramMb / 1024)} GB)`);
-    else parts.push('no graphics card memory detected');
-    return parts.join(' · ');
-  };
-
   const refreshHardwareSpecs = async () => {
     if (!window.electronAPI || !chatHwBadge) return;
     try {
@@ -2443,19 +2276,46 @@ if (appElement) {
     await refreshActiveChatModelUI();
   };
 
-  // ---- Model picker (shared by AI Chat and dictation cleanup) ----
+  // ---- Model picker (voice to text, text cleanup and AI chat) ----
 
-  let pickerPurpose: LlmPurpose = 'chat';
+  type PickerPurpose = LlmPurpose | 'speech';
+  let pickerPurpose: PickerPurpose = 'chat';
+
+  // Voice models in the order shown, each with a one-word sense of what it is for.
+  const SPEECH_MODELS: { id: string; tag: string }[] = [
+    { id: 'onnx-community/moonshine-base-ONNX', tag: 'Fast and accurate' },
+    { id: 'onnx-community/moonshine-tiny-ONNX', tag: 'Fastest' },
+    { id: 'Xenova/whisper-base.en', tag: 'Balanced' },
+    { id: 'Xenova/whisper-tiny.en', tag: 'Basic' },
+    { id: 'Xenova/whisper-small.en', tag: 'Accurate' },
+    { id: 'distil-whisper/distil-small.en', tag: 'Accurate' },
+    { id: 'distil-whisper/distil-medium.en', tag: 'Very accurate' },
+    { id: 'distil-whisper/distil-large-v3', tag: 'Most accurate' },
+  ];
+
+  const gb = (n: number) => (n >= 10 ? Math.round(n) : Math.round(n * 10) / 10);
+
+  /** "Free now: 21 GB memory · 13 GB graphics": what the recommendations are based on. */
+  const describeFreeMemory = (mem: MemorySnapshot) =>
+    `Free now: ${gb(mem.freeRamGb)} GB memory` + (mem.freeVramGb === null ? ' · no graphics card in use' : ` · ${gb(mem.freeVramGb)} GB graphics`);
 
   const refreshAfterModelChange = async () => {
     await refreshActiveChatModelUI();
     await updateAiStatusUI();
+    await refreshSettingsModelStatus();
     if (settingsModal?.classList.contains('active')) await renderSetupCards();
-    await renderModelPicker();
+    if (chatModelsModal?.classList.contains('active')) await renderModelPicker();
   };
 
-  const useModel = async (purpose: LlmPurpose, modelId: string) => {
-    if (purpose === 'chat') {
+  const useModel = async (purpose: PickerPurpose, modelId: string) => {
+    if (purpose === 'speech') {
+      inputModel.value = modelId;
+      await window.electronAPI.setSetting('model', modelId);
+      const loading = attemptLoadModel(modelId);
+      await refreshSettingsModelStatus();
+      await loading;
+      await refreshAfterModelChange();
+    } else if (purpose === 'chat') {
       await window.electronAPI.llmChatSetModel(modelId);
       await refreshAfterModelChange();
       void ensureChatModelLoaded();
@@ -2467,95 +2327,152 @@ if (appElement) {
     }
   };
 
+  interface PickerRow {
+    id: string;
+    name: string;
+    tip: string;
+    fit: LlmFit;
+    /** Graphics-memory note: shown green when ok, muted when not. */
+    gpuNote: { text: string; ok: boolean } | null;
+    extra: string | null;
+    isDownloaded: boolean;
+    downloadProgress: number | null;
+    sizeText: string;
+    removable: boolean;
+    rank: number;
+  }
+
+  const speechRows = async (mem: MemorySnapshot): Promise<{ rows: PickerRow[]; selectedId: string; recommendedId: string }> => {
+    const hw = await getHardwareInfo();
+    const rows = await Promise.all(SPEECH_MODELS.map(async ({ id, tag }, rank) => {
+      const device = await resolveDevice(id, inputComputeDevice.value);
+      const needsGpu = modelFamily(id) === 'distil';
+      const verdict = assessSpeechFit(device, needsGpu, MODEL_VRAM_MB[id]?.auto ?? 0, { hasWebGpu: hw.hasWebGpu, freeVramGb: mem.freeVramGb });
+      // Voice models say where they run; most are fastest on the processor.
+      const gpuNote = verdict.onGpu ? { text: 'Runs on graphics card', ok: true }
+        : device === 'webgpu' && hw.hasWebGpu ? { text: 'Not enough graphics memory', ok: false }
+        : needsGpu ? { text: 'Needs a graphics card', ok: false }
+        : { text: 'Runs on processor', ok: true };
+      return {
+        id, name: MODEL_DETAILS[id]?.name || id, tip: tag, fit: verdict.fit,
+        gpuNote, extra: tag,
+        isDownloaded: await isHfModelDownloaded(id), downloadProgress: null,
+        sizeText: MODEL_DETAILS[id]?.sizeText || '', removable: false, rank,
+      };
+    }));
+    return { rows, selectedId: inputModel.value || DEFAULT_MODEL_ID, recommendedId: DEFAULT_MODEL_ID };
+  };
+
+  const llmRows = async (purpose: LlmPurpose, mem: MemorySnapshot): Promise<{ rows: PickerRow[]; selectedId: string; recommendedId: string | null }> => {
+    const [catalog, status] = await Promise.all([window.electronAPI.llmGetCatalog(), window.electronAPI.llmStatus()]);
+    const models = catalog.filter(m => purpose === 'chat' || !isReasoningModel(m.id));
+    const rows = models.map(m => {
+      const f = assessLlmFit(m, purpose, mem);
+      return {
+        id: m.id, name: m.name, tip: m.description, fit: f.fit, extra: null,
+        gpuNote: f.fitsOnGpu === null ? null : f.fitsOnGpu ? { text: 'Fits in graphics memory', ok: true } : { text: 'Not enough graphics memory', ok: false },
+        isDownloaded: m.isDownloaded,
+        downloadProgress: status.activeDownloadModelId === m.id ? m.downloadProgress : null,
+        sizeText: m.sizeText.replace('~', ''), removable: m.isDownloaded, rank: rankFor(purpose, m.id),
+      };
+    });
+    return {
+      rows,
+      selectedId: purpose === 'chat' ? status.chatModelId : status.activeModelId,
+      recommendedId: recommendLlm(purpose, models, mem),
+    };
+  };
+
+  const PICKER_TITLES: Record<PickerPurpose, string> = { speech: 'Voice to text', cleanup: 'Text cleanup', chat: 'AI chat' };
+
   const renderModelPicker = async () => {
     if (!window.electronAPI || !modelCatalogContainer) return;
     try {
-      const [catalog, status, hw] = await Promise.all([
-        window.electronAPI.llmGetCatalog(),
-        window.electronAPI.llmStatus(),
-        window.electronAPI.getHardwareProfile(),
-      ]);
       const purpose = pickerPurpose;
-      if (pickerTitle) pickerTitle.textContent = purpose === 'chat' ? 'Chat model' : 'Dictation cleanup model';
-      if (pickerSub) pickerSub.textContent = `Your PC: ${describeLlmHardware(hw)}`;
+      const mem: MemorySnapshot = await window.electronAPI.llmMemoryState();
+      const status = await window.electronAPI.llmStatus();
+      const { rows, selectedId, recommendedId } = purpose === 'speech' ? await speechRows(mem) : await llmRows(purpose, mem);
+      if (purpose !== pickerPurpose) return; // switched while measuring
+      if (pickerTitle) pickerTitle.textContent = PICKER_TITLES[purpose];
+      if (pickerSub) pickerSub.textContent = describeFreeMemory(mem);
 
-      const selectedId = purpose === 'chat' ? status.chatModelId : status.activeModelId;
-      const models = catalog.filter(m => purpose === 'chat' || !isReasoningModel(m.id));
-      const recommendedId = recommendLlm(purpose, models, hw);
       const fitOrder = { great: 0, slow: 1, 'too-big': 2 };
-      const rows = models
-        .map(m => ({ m, f: assessLlmFit(m, hw) }))
-        .sort((a, b) =>
-          Number(b.m.id === recommendedId) - Number(a.m.id === recommendedId)
-          || fitOrder[a.f.fit] - fitOrder[b.f.fit]
-          || rankFor(purpose, a.m.id) - rankFor(purpose, b.m.id));
+      rows.sort((a, b) =>
+        Number(b.id === recommendedId) - Number(a.id === recommendedId)
+        || fitOrder[a.fit] - fitOrder[b.fit]
+        || a.rank - b.rank);
 
-      const rowHtml = ({ m, f }: typeof rows[number]) => {
-        const isSelected = m.id === selectedId;
-        const isDownloading = status.activeDownloadModelId === m.id;
-        const otherDownload = !!status.activeDownloadModelId && !isDownloading;
-        const gpuFact = f.fitsOnGpu === null ? ''
-          : f.fitsOnGpu ? '<span class="pick-fact gpu-yes">Fits on graphics card</span>'
-          : '<span class="pick-fact gpu-no">Too big for graphics card</span>';
+      const anyDownload = !!status.activeDownloadModelId;
+      const rowHtml = (r: PickerRow) => {
+        const isSelected = r.id === selectedId;
+        const gpuFact = r.gpuNote ? `<span class="pick-fact ${r.gpuNote.ok ? 'gpu-yes' : 'gpu-no'}">${r.gpuNote.text}</span>` : '';
+        const label = purpose === 'speech' && r.fit === 'slow' ? 'Slow on this PC' : fitLabel(r.fit);
 
         let action: string;
-        if (isSelected && m.isDownloaded) action = '<span class="badge badge-on">In use</span>';
-        else if (isDownloading) action = `<button class="btn btn-secondary btn-small" data-dl="${m.id}" disabled>Downloading ${m.downloadProgress}%</button>`;
-        else if (m.isDownloaded) action = `<button class="btn btn-primary btn-small" data-act="use">Use</button>`;
-        else if (f.fit === 'too-big') action = '';
-        else action = `<button class="btn btn-secondary btn-small" data-act="download" ${otherDownload ? 'disabled' : ''}>Download</button>`;
+        if (isSelected && r.isDownloaded) action = '<span class="badge badge-on">In use</span>';
+        else if (r.downloadProgress !== null) action = `<button class="btn btn-secondary btn-small" disabled>${r.downloadProgress}%</button>`;
+        else if (r.isDownloaded) action = '<button class="btn btn-primary btn-small" data-act="use">Use</button>';
+        else if (r.fit === 'too-big') action = '';
+        else action = `<button class="btn btn-secondary btn-small" data-act="download" ${anyDownload && purpose !== 'speech' ? 'disabled' : ''}>Download</button>`;
 
-        const remove = m.isDownloaded && !isDownloading
-          ? `<button class="s-link pick-remove" data-act="remove" title="Delete the downloaded file">Remove</button>` : '';
-
+        const remove = r.removable ? '<button class="s-link pick-remove" data-act="remove" title="Delete the downloaded file">Remove</button>' : '';
         return `
-          <div class="pick-row${isSelected ? ' is-selected' : ''}${f.fit === 'too-big' ? ' is-too-big' : ''}" data-id="${m.id}" title="${escapeHtml(m.description)}">
+          <div class="pick-row${isSelected ? ' is-selected' : ''}${r.fit === 'too-big' ? ' is-too-big' : ''}" data-id="${escapeHtml(r.id)}" title="${escapeHtml(r.tip)}">
             <div class="pick-main">
-              <div class="pick-name">${escapeHtml(m.name)}${m.id === recommendedId ? ' <span class="badge badge-rec">Recommended</span>' : ''}</div>
+              <div class="pick-name">${escapeHtml(r.name)}${r.id === recommendedId ? ' <span class="badge badge-rec">Recommended</span>' : ''}</div>
               <div class="pick-facts">
-                <span class="pick-fact fit-${f.fit}"><span class="pick-dot"></span>${fitLabel(f.fit)}</span>
+                <span class="pick-fact fit-${r.fit}"><span class="pick-dot"></span>${label}</span>
                 ${gpuFact}
-                <span class="pick-fact">${m.isDownloaded ? `Downloaded${remove}` : escapeHtml(m.sizeText.replace('~', '') + ' download')}</span>
+                ${r.extra ? `<span class="pick-fact">${escapeHtml(r.extra)}</span>` : ''}
+                ${r.isDownloaded ? (remove ? `<span class="pick-fact">${remove}</span>` : '') : `<span class="pick-fact">${escapeHtml(r.sizeText)}</span>`}
               </div>
             </div>
             <div class="pick-actions">${action}</div>
           </div>`;
       };
 
-      const usable = rows.filter(r => r.f.fit !== 'too-big' || r.m.id === selectedId);
-      const tooBig = rows.filter(r => r.f.fit === 'too-big' && r.m.id !== selectedId);
+      const usable = rows.filter(r => r.fit !== 'too-big' || r.id === selectedId);
+      const tooBig = rows.filter(r => r.fit === 'too-big' && r.id !== selectedId);
       const wasOpen = !!modelCatalogContainer.querySelector('.pick-more[open]');
       modelCatalogContainer.innerHTML = `
         <div class="pick-list">${usable.map(rowHtml).join('')}</div>
-        ${tooBig.length ? `<details class="pick-more"${wasOpen ? ' open' : ''}><summary>${tooBig.length} more ${tooBig.length === 1 ? 'is' : 'are'} too big for this PC</summary><div class="pick-list">${tooBig.map(rowHtml).join('')}</div></details>` : ''}`;
+        ${tooBig.length ? `<details class="pick-more"${wasOpen ? ' open' : ''}><summary>${tooBig.length} more need more free memory</summary><div class="pick-list">${tooBig.map(rowHtml).join('')}</div></details>` : ''}`;
 
       modelCatalogContainer.querySelectorAll<HTMLElement>('.pick-row').forEach(row => {
-        const m = catalog.find(c => c.id === row.dataset.id)!;
+        const r = rows.find(x => x.id === row.dataset.id)!;
         row.querySelector('[data-act="use"]')?.addEventListener('click', async (e) => {
           const btn = e.currentTarget as HTMLButtonElement;
           btn.textContent = 'Loading…';
           btn.disabled = true;
-          await useModel(purpose, m.id);
+          await useModel(purpose, r.id);
         });
-        row.querySelector('[data-act="download"]')?.addEventListener('click', async () => {
+        row.querySelector('[data-act="download"]')?.addEventListener('click', async (e) => {
+          if (purpose === 'speech') {
+            // The voice model downloads as it loads; progress shows in its Settings row.
+            const btn = e.currentTarget as HTMLButtonElement;
+            btn.textContent = 'Downloading…';
+            btn.disabled = true;
+            await useModel(purpose, r.id);
+            return;
+          }
           if (llmDownloadBanner) llmDownloadBanner.style.display = 'block';
-          if (llmDownloadTitle) llmDownloadTitle.textContent = `Downloading ${m.name}…`;
-          const pending = window.electronAPI.llmDownloadModel(m.id);
+          if (llmDownloadTitle) llmDownloadTitle.textContent = `Downloading ${r.name}…`;
+          const pending = window.electronAPI.llmDownloadModel(r.id);
           await renderModelPicker();
           const res = await pending;
           if (res.success) {
-            await useModel(purpose, m.id);
+            await useModel(purpose, r.id);
           } else if (res.error && res.error !== 'Download cancelled') {
             // Keep the banner up long enough to read why it failed.
             if (llmDownloadTitle) llmDownloadTitle.textContent = `Download failed: ${res.error}`;
-            await new Promise(r => setTimeout(r, 6000));
+            await new Promise(res => setTimeout(res, 6000));
           }
           if (llmDownloadBanner) llmDownloadBanner.style.display = 'none';
           await renderModelPicker();
         });
         row.querySelector('[data-act="remove"]')?.addEventListener('click', async () => {
-          if (!confirm(`Delete ${m.name} (${m.sizeText.replace('~', '')}) from this PC? You can download it again later.`)) return;
-          await window.electronAPI.llmDeleteModel(m.id);
+          if (!confirm(`Delete ${r.name} (${r.sizeText}) from this PC? You can download it again later.`)) return;
+          await window.electronAPI.llmDeleteModel(r.id);
           await refreshAfterModelChange();
         });
       });
@@ -2564,17 +2481,30 @@ if (appElement) {
     }
   };
 
-  const openModelPicker = async (purpose: LlmPurpose) => {
+  const openModelPicker = async (purpose: PickerPurpose) => {
     pickerPurpose = purpose;
+    // Open straight away; measuring free memory can take a moment the first time.
+    if (pickerTitle) pickerTitle.textContent = PICKER_TITLES[purpose];
+    if (pickerSub) pickerSub.textContent = 'Checking free memory…';
+    if (modelCatalogContainer) modelCatalogContainer.innerHTML = '';
+    chatModelsModal?.classList.add('active');
     await renderModelPicker();
     const body = chatModelsModal?.querySelector('.chat-models-modal-body');
     if (body) body.scrollTop = 0;
-    chatModelsModal?.classList.add('active');
   };
 
   chatModelPickerBtn?.addEventListener('click', () => openModelPicker('chat'));
-  document.getElementById('settings-chat-model-btn')?.addEventListener('click', () => openModelPicker('chat'));
-  document.getElementById('ai-change-model')?.addEventListener('click', () => openModelPicker('cleanup'));
+  document.getElementById('row-speech')?.addEventListener('click', () => openModelPicker('speech'));
+  document.getElementById('row-chat')?.addEventListener('click', () => openModelPicker('chat'));
+  const rowCleanup = document.getElementById('row-cleanup');
+  rowCleanup?.addEventListener('click', (e) => {
+    // The on/off switch inside the row must not also open the picker.
+    if ((e.target as HTMLElement).closest('.switch')) return;
+    openModelPicker('cleanup');
+  });
+  rowCleanup?.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openModelPicker('cleanup'); }
+  });
 
   chatModelsClose?.addEventListener('click', () => chatModelsModal?.classList.remove('active'));
   chatModelsDone?.addEventListener('click', () => chatModelsModal?.classList.remove('active'));

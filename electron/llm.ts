@@ -1,4 +1,5 @@
 import path from 'path'
+import os from 'os'
 import fs from 'fs'
 import https from 'https'
 import http from 'http'
@@ -597,6 +598,63 @@ async function getLlamaInstance(): Promise<any> {
         llama = await getLlama()
     }
     return llama
+}
+
+export interface LoadedLlm {
+    slot: 'cleanup' | 'chat'
+    id: string
+    /** Estimated memory the model and its context occupy. */
+    gb: number
+    onGpu: boolean
+}
+
+export interface MemoryState {
+    freeRamGb: number
+    totalRamGb: number
+    /** Graphics memory free right now as the AI engine sees it; null when it runs without a GPU. */
+    freeVramGb: number | null
+    totalVramGb: number | null
+    /** Models loaded right now, so a picker can count what switching would free up. */
+    loaded: LoadedLlm[]
+}
+
+const GIB = 1024 * 1024 * 1024
+
+function estimateGb(modelId: string): number {
+    const meta = OPEN_MODELS.find(m => m.id === modelId)
+    return meta ? meta.approxBytes / GIB + 0.8 : 0
+}
+
+/** Free memory right now, rather than the machine's totals, so recommendations reflect what is in use. */
+export async function getMemoryState(): Promise<MemoryState> {
+    const loaded: LoadedLlm[] = []
+    if (model && status === 'ready') {
+        loaded.push({ slot: 'cleanup', id: activeModelId, gb: estimateGb(activeModelId), onGpu: (model.gpuLayers ?? 0) > 0 })
+    }
+    if (chatOwnModel && chatStatus === 'ready') {
+        loaded.push({ slot: 'chat', id: chatModelId, gb: estimateGb(chatModelId), onGpu: (chatOwnModel.gpuLayers ?? 0) > 0 })
+    }
+
+    let freeVramGb: number | null = null
+    let totalVramGb: number | null = null
+    let freeRamGb = os.freemem() / GIB
+    try {
+        // Bounded: starting the engine the first time can take a moment on slow machines.
+        const instance = await Promise.race([getLlamaInstance(), new Promise<null>(r => setTimeout(() => r(null), 4000))])
+        if (instance && instance.gpu) {
+            // The engine adds integrated graphics (which borrows system RAM, reported as unified
+            // memory) to the graphics card's own memory; only the card's dedicated memory counts here.
+            const vram = await instance.getVramState()
+            const dedicatedTotal = vram.total - vram.unifiedSize
+            if (dedicatedTotal > 0) {
+                freeVramGb = Math.max(0, vram.free - vram.unifiedSize) / GIB
+                totalVramGb = dedicatedTotal / GIB
+            }
+        }
+        if (instance) freeRamGb = (await instance.getRamState()).free / GIB
+    } catch { }
+
+    return { freeRamGb, totalRamGb: os.totalmem() / GIB, freeVramGb, totalVramGb, loaded }
 }
 
 async function warmUpCleanup(): Promise<void> {

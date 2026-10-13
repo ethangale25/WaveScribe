@@ -1,5 +1,5 @@
-// Plain-language verdicts for the local AI model pickers: will a model run well on this PC, does it
-// fit on the graphics card, and which one we recommend for the job.
+// Plain-language verdicts for the model pickers: will a model run well with the memory that is free
+// right now, does it fit in the graphics card's free memory, and which one we recommend for the job.
 
 export type LlmPurpose = 'chat' | 'cleanup';
 export type LlmFit = 'great' | 'slow' | 'too-big';
@@ -10,19 +10,32 @@ export interface LlmModelInfo {
   approxBytes: number;
 }
 
-export interface LlmHardware {
-  totalRamGb: number;
-  gpuVramMb: number | null;
+export interface LoadedLlm {
+  slot: LlmPurpose;
+  id: string;
+  gb: number;
+  onGpu: boolean;
+}
+
+/** Memory free right now (not the machine's totals) and the models already holding some of it. */
+export interface MemorySnapshot {
+  freeRamGb: number;
+  /** null when the AI engine runs without a GPU. */
+  freeVramGb: number | null;
+  loaded: LoadedLlm[];
 }
 
 export interface LlmFitResult {
   fit: LlmFit;
-  /** null when the graphics card's memory is unknown. */
+  /** null when there is no usable graphics card. */
   fitsOnGpu: boolean | null;
   memoryGb: number;
 }
 
 const GIB = 1024 * 1024 * 1024;
+// Keep headroom: other apps and the desktop grow into free memory too.
+const VRAM_HEADROOM = 0.9;
+const RAM_HEADROOM = 0.85;
 
 // Best first. Reasoning (DeepSeek R1) models are left out: they think out loud before answering,
 // which is slow for chat and unusable for cleanup.
@@ -37,16 +50,30 @@ export function isReasoningModel(id: string): boolean {
   return id.startsWith('deepseek-r1');
 }
 
-export function assessLlmFit(model: LlmModelInfo, hw: LlmHardware): LlmFitResult {
-  // Weights plus the 4K-token context and runtime overhead.
-  const memoryGb = model.approxBytes / GIB + 0.8;
-  const vramGb = hw.gpuVramMb ? hw.gpuVramMb / 1024 : null;
-  // Leave headroom for the desktop and other apps using the graphics card.
-  const fitsOnGpu = vramGb === null ? null : memoryGb <= vramGb * 0.85;
+/** Memory a model needs: its weights plus the 4K-token context and runtime overhead. */
+export function llmMemoryGb(model: LlmModelInfo): number {
+  return model.approxBytes / GIB + 0.8;
+}
 
+export function assessLlmFit(model: LlmModelInfo, purpose: LlmPurpose, mem: MemorySnapshot): LlmFitResult {
+  const memoryGb = llmMemoryGb(model);
+
+  // Already loaded (for this job or the other one): it is shared, so nothing more is needed.
+  const already = mem.loaded.find(l => l.id === model.id);
+  if (already) {
+    const fit = already.onGpu || parseFloat(model.parameters) <= 4 ? 'great' : 'slow';
+    return { fit, fitsOnGpu: mem.freeVramGb === null ? null : already.onGpu, memoryGb };
+  }
+
+  // Switching this job's model frees whatever it holds now.
+  const current = mem.loaded.find(l => l.slot === purpose);
+  const vram = mem.freeVramGb === null ? null : mem.freeVramGb + (current?.onGpu ? current.gb : 0);
+  const ram = mem.freeRamGb + (current && !current.onGpu ? current.gb : 0);
+
+  const fitsOnGpu = vram === null ? null : memoryGb <= vram * VRAM_HEADROOM;
   let fit: LlmFit;
   if (fitsOnGpu) fit = 'great';
-  else if (memoryGb > hw.totalRamGb * 0.7) fit = 'too-big';
+  else if (memoryGb > ram * RAM_HEADROOM) fit = 'too-big';
   // On the processor alone, models up to ~4B still answer at a comfortable reading speed.
   else fit = parseFloat(model.parameters) <= 4 ? 'great' : 'slow';
 
@@ -59,16 +86,32 @@ export function rankFor(purpose: LlmPurpose, id: string): number {
   return i === -1 ? list.length : i;
 }
 
-/** The best model for the purpose that runs well here, falling back to the smallest that runs at all. */
-export function recommendLlm(purpose: LlmPurpose, models: LlmModelInfo[], hw: LlmHardware): string | null {
+/** The best model for the job that runs well right now, falling back to the smallest that runs at all. */
+export function recommendLlm(purpose: LlmPurpose, models: LlmModelInfo[], mem: MemorySnapshot): string | null {
   const ranking = purpose === 'chat' ? CHAT_RANKING : CLEANUP_RANKING;
   const byId = new Map(models.map(m => [m.id, m]));
-  const fitOf = (id: string) => byId.has(id) ? assessLlmFit(byId.get(id)!, hw).fit : 'too-big';
+  const fitOf = (id: string) => byId.has(id) ? assessLlmFit(byId.get(id)!, purpose, mem).fit : 'too-big';
   return ranking.find(id => fitOf(id) === 'great')
     ?? [...ranking].reverse().find(id => fitOf(id) !== 'too-big')
     ?? null;
 }
 
 export function fitLabel(fit: LlmFit): string {
-  return fit === 'great' ? 'Runs great' : fit === 'slow' ? 'Slow on this PC' : 'Too big for this PC';
+  return fit === 'great' ? 'Runs great' : fit === 'slow' ? 'Slow right now' : 'Not enough free memory';
+}
+
+/** Verdict for a speech-to-text model on the device it would run on. */
+export function assessSpeechFit(
+  device: 'cpu' | 'webgpu',
+  needsGpu: boolean,
+  vramMb: number,
+  hw: { hasWebGpu: boolean; freeVramGb: number | null },
+): { fit: LlmFit; onGpu: boolean } {
+  if (device === 'cpu') {
+    // Models that need a GPU to be usable crawl on the CPU.
+    return { fit: needsGpu ? 'slow' : 'great', onGpu: false };
+  }
+  if (!hw.hasWebGpu) return { fit: 'slow', onGpu: false };
+  if (hw.freeVramGb !== null && vramMb / 1024 > hw.freeVramGb * VRAM_HEADROOM) return { fit: 'slow', onGpu: false };
+  return { fit: 'great', onGpu: true };
 }

@@ -22,7 +22,8 @@ import {
     setChatModel,
     loadChatModel,
     unloadChatModel,
-    getCleanupModelId
+    getCleanupModelId,
+    getMemoryState
 } from './llm'
 import { captureContext } from './context-capture'
 import { locateCaret, warmUpCaretLocator, stopCaretLocator, CaretRect } from './caret'
@@ -649,6 +650,8 @@ ipcMain.handle('get-vram-mb', (): Promise<number | null> => probeGpuVram());
 ipcMain.handle('get-hardware-profile', () => {
     return detectHardware();
 });
+
+ipcMain.handle('llm-memory-state', () => getMemoryState());
 
 ipcMain.handle('llm-get-catalog', () => {
     return getModelCatalog();

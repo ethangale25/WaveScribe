@@ -40,6 +40,14 @@ contextBridge.exposeInMainWorld('electronAPI', {
     llmChatLoad: () => ipcRenderer.invoke('llm-chat-load'),
     llmChatUnload: () => ipcRenderer.invoke('llm-chat-unload'),
     captureContext: () => ipcRenderer.invoke('capture-context'),
+    updateGetState: () => ipcRenderer.invoke('update-get-state'),
+    updateCheck: () => ipcRenderer.invoke('update-check'),
+    updateInstall: () => ipcRenderer.invoke('update-install'),
+    onUpdateState: (callback: (state: any) => void) => {
+        const handler = (_: any, state: any) => callback(state);
+        ipcRenderer.on('update-state', handler);
+        return () => { ipcRenderer.removeListener('update-state', handler); }
+    },
     showNotification: (title: string, body: string) => ipcRenderer.invoke('show-notification', { title, body }),
     onLlmDownloadProgress: (callback: (progress: any) => void) => {
         const handler = (_: any, progress: any) => callback(progress);

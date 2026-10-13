@@ -190,6 +190,58 @@ body {
   box-sizing: border-box;
 }
 
+/* Version in the title bar; becomes the update button when one is ready. */
+.version-chip {
+  -webkit-app-region: no-drag;
+  margin-left: 2px;
+  padding: 3px 9px;
+  border: none;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: 11px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  cursor: pointer;
+  opacity: 0.7;
+  transition: background 0.15s ease, color 0.15s ease, opacity 0.15s ease;
+}
+
+.version-chip:empty {
+  display: none;
+}
+
+.version-chip:hover {
+  opacity: 1;
+  background: var(--icon-btn-hover);
+}
+
+.version-chip.chip-busy {
+  opacity: 1;
+  color: var(--btn-bg);
+  background: rgba(43, 85, 245, 0.12);
+  cursor: default;
+}
+
+.version-chip.chip-ready {
+  opacity: 1;
+  color: #fff;
+  background: var(--btn-bg);
+  box-shadow: 0 0 0 0 rgba(43, 85, 245, 0.5);
+  animation: chipPulse 2.4s ease-out infinite;
+}
+
+.version-chip.chip-ready:hover {
+  background: var(--btn-hover);
+}
+
+@keyframes chipPulse {
+  0% { box-shadow: 0 0 0 0 rgba(43, 85, 245, 0.45); }
+  70%, 100% { box-shadow: 0 0 0 7px rgba(43, 85, 245, 0); }
+}
+
 .drag-region {
   flex-grow: 1;
   height: 100%;
@@ -203,6 +255,7 @@ body {
 
 .left-controls {
   display: flex;
+  align-items: center;
   -webkit-app-region: no-drag;
 }
 

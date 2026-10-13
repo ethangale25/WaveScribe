@@ -378,7 +378,7 @@ app.whenReady().then(async () => {
     const appIcon = getAppIcon()
     createWindow()
     createTray(appIcon)
-    initAutoUpdate()
+    initAutoUpdate((state) => mainWindow?.webContents.send('update-state', state))
 
     // Auto-init LLM if enabled and model is already downloaded
     const savedLlm = store.get('llmModelId') as string | undefined

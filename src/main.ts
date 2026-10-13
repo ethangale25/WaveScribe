@@ -103,11 +103,22 @@ declare global {
       llmChatLoad: () => Promise<{ success: boolean; error?: string }>
       llmChatUnload: () => Promise<{ success: boolean }>
       captureContext: () => Promise<{ success: boolean; text: string }>
+      updateGetState: () => Promise<UpdateState>
+      updateCheck: () => Promise<UpdateState>
+      updateInstall: () => Promise<UpdateState>
+      onUpdateState: (callback: (state: UpdateState) => void) => () => void
       showNotification: (title: string, body: string) => Promise<{ success: boolean }>
       onLlmDownloadProgress: (callback: (progress: { modelId: string; percent: number; loadedBytes: number; totalBytes: number; phase?: 'downloading' | 'verifying' }) => void) => () => void
       onLlmChatToken: (callback: (token: string) => void) => () => void
     }
   }
+}
+
+interface UpdateState {
+  version: string
+  status: 'dev' | 'idle' | 'checking' | 'up-to-date' | 'downloading' | 'ready' | 'error'
+  newVersion?: string
+  percent?: number
 }
 
 // Developer hook used by tools/eval to benchmark CPU thread counts.
@@ -128,6 +139,7 @@ if (appElement) {
           <button class="win-btn island" id="win-island" title="Toggle Island Mode">
             <img src="${minimodeIcon}" width="17" height="17" />
           </button>
+          <button class="version-chip" id="version-chip" type="button"></button>
         </div>
         <div class="drag-region"></div>
         <div class="window-controls">
@@ -2102,6 +2114,74 @@ if (appElement) {
   // Diagnostics harness — after a run it reloads the user's real model so the
   // main UI returns to a working state.
   initDiagnostics(() => attemptLoadModel(currentModelId));
+
+  // --- Version and updates ---
+  // The title bar shows the version. When an update exists it downloads in the background, then the
+  // chip becomes "Restart to update": one click installs silently and reopens WaveScribe.
+  const versionChip = document.getElementById('version-chip') as HTMLButtonElement | null;
+  let updateState: UpdateState | null = null;
+  let manualCheck = false;
+  let chipNoteTimer: ReturnType<typeof setTimeout> | null = null;
+
+  const renderVersionChip = (note?: string) => {
+    if (!versionChip || !updateState) return;
+    const u = updateState;
+    let text = `v${u.version}`;
+    let mode = 'quiet';
+    let title = 'Check for updates';
+    if (u.status === 'dev') {
+      text = `v${u.version} \u00b7 dev`;
+      title = 'Development build: updates are off';
+    } else if (u.status === 'downloading') {
+      text = `Updating ${u.percent ?? 0}%`;
+      mode = 'busy';
+      title = `Downloading version ${u.newVersion}`;
+    } else if (u.status === 'ready') {
+      text = 'Restart to update';
+      mode = 'ready';
+      title = `Version ${u.newVersion} is ready. WaveScribe restarts in a few seconds.`;
+    } else if (note) {
+      text = note;
+    } else if (u.status === 'checking' && manualCheck) {
+      text = 'Checking\u2026';
+    }
+    versionChip.textContent = text;
+    versionChip.className = `version-chip chip-${mode}`;
+    versionChip.title = title;
+  };
+
+  const showChipNote = (note: string) => {
+    renderVersionChip(note);
+    if (chipNoteTimer) clearTimeout(chipNoteTimer);
+    chipNoteTimer = setTimeout(() => { chipNoteTimer = null; renderVersionChip(); }, 3000);
+  };
+
+  versionChip?.addEventListener('click', async () => {
+    if (!window.electronAPI || !updateState) return;
+    if (updateState.status === 'ready') {
+      // Never cut a dictation short.
+      if (isRecording || isProcessing) { showChipNote('Finish dictating first'); return; }
+      versionChip.textContent = 'Restarting\u2026';
+      await window.electronAPI.updateInstall();
+    } else if (updateState.status !== 'dev' && updateState.status !== 'downloading') {
+      manualCheck = true;
+      renderVersionChip();
+      await window.electronAPI.updateCheck();
+    }
+  });
+
+  if (window.electronAPI) {
+    window.electronAPI.onUpdateState((state) => {
+      updateState = state;
+      if (manualCheck && (state.status === 'up-to-date' || state.status === 'error')) {
+        manualCheck = false;
+        showChipNote(state.status === 'up-to-date' ? 'Up to date \u2713' : 'Couldn\u2019t check');
+        return;
+      }
+      renderVersionChip();
+    });
+    window.electronAPI.updateGetState().then((state) => { updateState = state; renderVersionChip(); }).catch(() => { });
+  }
 
   if (window.electronAPI) {
     window.electronAPI.getSettings().then(async (settings) => {

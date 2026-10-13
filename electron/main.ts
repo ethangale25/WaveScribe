@@ -1,4 +1,4 @@
-import { app, BrowserWindow, globalShortcut, ipcMain, clipboard, Menu, screen, Rectangle, Notification, nativeImage, Tray, protocol, shell } from 'electron'
+import { app, BrowserWindow, globalShortcut, ipcMain, clipboard, ClipboardItem, Menu, screen, Rectangle, Notification, nativeImage, Tray, protocol, shell } from 'electron'
 import path from 'path'
 import { fileURLToPath } from 'url'
 import fs from 'fs'
@@ -91,6 +91,7 @@ app.on('before-quit', () => { isQuitting = true })
 
 let mainWindow: BrowserWindow | null = null
 let originalBounds: Rectangle | null = null
+let originalMinSize: number[] | null = null
 let spinnerWindow: BrowserWindow | null = null
 let tray: Tray | null = null
 
@@ -418,6 +419,27 @@ public class Kbd {
     });
 }
 
+/**
+ * Copies everything on the clipboard (text, HTML, RTF, images, files...) into standalone items, so
+ * it can be put back after a paste. Formats that cannot be read are skipped rather than failing.
+ */
+async function snapshotClipboard(): Promise<ClipboardItem[]> {
+    try {
+        const items = await clipboard.read();
+        const copies = await Promise.all(items.map(async (item) => {
+            const entries = await Promise.all(item.types.map(async (type) => {
+                try { return [type, await item.getType(type)] as const; } catch { return null; }
+            }));
+            const readable = entries.filter((e): e is NonNullable<typeof e> => e !== null);
+            return readable.length ? new ClipboardItem(Object.fromEntries(readable)) : null;
+        }));
+        return copies.filter((c): c is ClipboardItem => c !== null);
+    } catch (err) {
+        console.warn('[InsertText] Could not read the clipboard:', err);
+        return [];
+    }
+}
+
 // IPC commands for text injection: set clipboard, send Ctrl+V, restore clipboard.
 ipcMain.handle('insert-text', async (event, text: string) => {
     // Debug/test switch: report success without touching the clipboard or the focused app.
@@ -426,32 +448,20 @@ ipcMain.handle('insert-text', async (event, text: string) => {
         return { success: true };
     }
     try {
-        // Remember everything on the clipboard (not just text) so images and rich text survive.
-        const previous = {
-            text: clipboard.readText(),
-            html: clipboard.readHTML(),
-            rtf: clipboard.readRTF(),
-            image: clipboard.readImage(),
-        };
-        clipboard.writeText(text);
+        const previous = await snapshotClipboard();
+        await clipboard.writeText(text);
 
         // Native SendInput takes ~1ms; PowerShell (cold start + C# compile) takes hundreds.
         const success = sendCtrlV() || await sendCtrlVViaPowerShell();
 
         // Restore the original clipboard only if it still holds what we pasted.
-        setTimeout(() => {
-            if (clipboard.readText() === text) {
-                const hasContent = previous.text || previous.html || previous.rtf || !previous.image.isEmpty();
-                if (!hasContent) {
-                    clipboard.clear();
-                } else {
-                    clipboard.write({
-                        text: previous.text || undefined,
-                        html: previous.html || undefined,
-                        rtf: previous.rtf || undefined,
-                        image: previous.image.isEmpty() ? undefined : previous.image,
-                    });
-                }
+        setTimeout(async () => {
+            try {
+                if (await clipboard.readText() !== text) return;
+                if (previous.length === 0) clipboard.clear();
+                else await clipboard.write(previous);
+            } catch (err) {
+                console.warn('[InsertText] Could not restore the clipboard:', err);
             }
         }, 350);
 
@@ -513,8 +523,8 @@ ipcMain.handle('window-control', (event, action) => {
     if (action === 'close') win.close();
 });
 
-ipcMain.handle('copy-text', (event, text) => {
-    clipboard.writeText(text);
+ipcMain.handle('copy-text', async (event, text) => {
+    await clipboard.writeText(text);
     return { success: true };
 });
 
@@ -533,6 +543,9 @@ ipcMain.handle('toggle-mini-mode', (event, isMini: boolean) => {
     if (isMini) {
         // Save bounds before shrinking
         originalBounds = win.getBounds();
+        // Electron applies the window's minimum size to setBounds, so lift it while the pill is shown.
+        originalMinSize = win.getMinimumSize();
+        win.setMinimumSize(0, 0);
 
         // Calculate new bounds for mini island (250x50, bottom center) on the CURRENT monitor
         const currentDisplay = screen.getDisplayMatching(win.getBounds());
@@ -557,6 +570,9 @@ ipcMain.handle('toggle-mini-mode', (event, isMini: boolean) => {
         // Restore bounds
         if (originalBounds) {
             win.setBounds(originalBounds, true);
+        }
+        if (originalMinSize) {
+            win.setMinimumSize(originalMinSize[0], originalMinSize[1]);
         }
         win.setAlwaysOnTop(false);
     }

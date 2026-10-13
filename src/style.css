@@ -1099,6 +1099,31 @@ select:focus {
   color: #fff;
 }
 
+/* A download in progress: the button fills from the left without changing size. */
+.btn.btn-progress,
+.seg-btn.btn-progress {
+  position: relative;
+  overflow: hidden;
+  isolation: isolate;
+  cursor: progress;
+  opacity: 1;
+}
+
+.btn.btn-progress::before,
+.seg-btn.btn-progress::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  width: var(--p, 0%);
+  background: rgba(43, 85, 245, 0.55);
+  transition: width 0.3s ease;
+  z-index: -1;
+}
+
+.btn-progress .btn-label {
+  font-variant-numeric: tabular-nums;
+}
+
 .btn-small {
   padding: 6px 16px;
   font-size: 13px;
@@ -1932,8 +1957,8 @@ body.mini-mode #island-dot {
 }
 
 .chat-btn-circle {
-  width: 32px;
-  height: 32px;
+  width: 36px;
+  height: 36px;
   border-radius: 50%;
   border: none;
   display: flex;
@@ -2628,9 +2653,9 @@ body.mini-mode #island-dot {
   flex: none;
   display: grid;
   place-items: center;
-  width: 30px;
-  height: 30px;
-  border-radius: 8px;
+  width: 34px;
+  height: 34px;
+  border-radius: 9px;
   background: rgba(43, 85, 245, 0.14);
   color: var(--btn-bg);
 }

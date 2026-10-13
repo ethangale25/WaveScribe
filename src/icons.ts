@@ -1,8 +1,8 @@
 // One icon set for the whole app: outline icons on a 24-unit grid, drawn in the current text colour
 // so they follow the theme without CSS filters. Three sizes keep them consistent:
-//   16px  next to text (buttons, rows, chevrons)
-//   18px  inside round buttons (send, stop, dictate)
-//   10px  title-bar glyphs, matching the window controls (see TITLEBAR below)
+//   18px  next to text (buttons, rows, chevrons)
+//   20px  inside round buttons (send, stop, dictate)
+//   12px  title-bar glyphs, matching the window controls (see TITLEBAR below)
 
 export type IconName =
   | 'mic' | 'sliders' | 'chat' | 'sun' | 'moon' | 'pen'
@@ -30,7 +30,7 @@ const WAVE = '<line x1="90" y1="305.5" x2="90" y2="479.5"/><line x1="180.5" y1="
   + '<path d="M270 141 A45.5 45.5 0 0 1 361 141 V562 L315.5 712 L270 562 Z"/>'
   + '<line x1="451.5" y1="221.5" x2="451.5" y2="564.5"/><line x1="541.5" y1="305.5" x2="541.5" y2="478.5"/>';
 
-export function icon(name: IconName, size = 16, className = ''): string {
+export function icon(name: IconName, size = 18, className = ''): string {
   const cls = `ic${className ? ' ' + className : ''}`;
   if (name === 'wave') {
     return `<svg class="${cls}" width="${size}" height="${size}" viewBox="40 60 551 690" fill="none" stroke="currentColor" stroke-width="58" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${WAVE}</svg>`;
@@ -38,8 +38,8 @@ export function icon(name: IconName, size = 16, className = ''): string {
   return `<svg class="${cls}" width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${PATHS[name]}</svg>`;
 }
 
-// Title-bar glyphs: 10px with hairline strokes, like the Windows window controls.
-const tb = (body: string) => `<svg class="ic" viewBox="0 0 10 10" width="10" height="10" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${body}</svg>`;
+// Title-bar glyphs: 12px with hairline strokes, like the Windows window controls.
+const tb = (body: string) => `<svg class="ic" viewBox="0 0 10 10" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${body}</svg>`;
 export const TITLEBAR = {
   island: tb('<path d="M5 1v7.2M2 5.4L5 8.4 8 5.4" vector-effect="non-scaling-stroke"/>'),
   minimize: tb('<path d="M0 5h10" vector-effect="non-scaling-stroke"/>'),

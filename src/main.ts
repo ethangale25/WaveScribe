@@ -110,6 +110,35 @@ interface UpdateState {
   percent?: number
 }
 
+// Download buttons double as progress bars: the button keeps its size and fills from the left.
+// Buttons carry data-dl="<model id>"; widths are remembered so a re-rendered button keeps its size.
+const progressButtonWidths = new Map<string, number>();
+
+function startButtonProgress(button: HTMLElement, modelId: string): void {
+  progressButtonWidths.set(modelId, button.offsetWidth);
+  button.style.width = `${button.offsetWidth}px`;
+  button.dataset.dl = modelId;
+  button.classList.add('btn-progress');
+  button.innerHTML = '<span class="btn-label">0%</span>';
+  button.style.setProperty('--p', '0%');
+  (button as HTMLButtonElement).disabled = true;
+}
+
+function setButtonProgress(modelId: string, percent: number, label?: string): void {
+  const pct = Math.max(0, Math.min(100, Math.round(percent)));
+  document.querySelectorAll<HTMLElement>(`[data-dl="${CSS.escape(modelId)}"].btn-progress`).forEach(button => {
+    button.style.setProperty('--p', `${pct}%`);
+    const text = button.querySelector('.btn-label');
+    if (text) text.textContent = label ?? `${pct}%`;
+  });
+}
+
+/** Markup for a button that is already showing download progress (after a re-render). */
+function progressButtonHtml(modelId: string, percent: number, className: string): string {
+  const width = progressButtonWidths.get(modelId);
+  return `<button class="${className} btn-progress" data-dl="${escapeHtml(modelId)}" style="--p: ${percent}%;${width ? ` width: ${width}px;` : ''}" disabled><span class="btn-label">${percent}%</span></button>`;
+}
+
 // Developer hook used by tools/eval to benchmark CPU thread counts.
 (window as any).__wavescribe = { benchCpuThreads };
 
@@ -235,7 +264,7 @@ if (appElement) {
         <!-- Chat Messages Container -->
         <div class="chat-messages" id="chat-messages">
           <div class="chat-welcome" id="chat-welcome">
-            <div class="chat-welcome-icon">${icon('chat', 32)}</div>
+            <div class="chat-welcome-icon">${icon('chat', 36)}</div>
             <h3>WaveScribe AI Chat</h3>
             <p>Chat locally with open-source models running 100% on your device with zero cloud latency.</p>
             <div class="chat-suggestions">
@@ -251,8 +280,8 @@ if (appElement) {
           <div class="chat-input-container">
             <canvas id="chat-waveform-canvas"></canvas>
             <textarea id="chat-input-textarea" class="chat-input-textarea" rows="1" placeholder="Type or click WaveScribe to dictate prompt..."></textarea>
-            <button class="chat-btn-circle btn-chat-mic" id="btn-chat-dictate" title="Dictate prompt via voice">${icon('wave', 18)}</button>
-            <button class="chat-btn-circle btn-chat-send" id="btn-chat-send" title="Send message (Enter)">${icon('arrowUp', 18)}</button>
+            <button class="chat-btn-circle btn-chat-mic" id="btn-chat-dictate" title="Dictate prompt via voice">${icon('wave', 20)}</button>
+            <button class="chat-btn-circle btn-chat-send" id="btn-chat-send" title="Send message (Enter)">${icon('arrowUp', 20)}</button>
           </div>
         </div>
       </div>
@@ -1500,6 +1529,7 @@ if (appElement) {
 
       if (setup.aiCleanup && setup.llmModelId) {
         if (needsDownload) {
+          startButtonProgress(button, setup.llmModelId);
           const dl = await window.electronAPI.llmDownloadModel(setup.llmModelId);
           if (!dl.success) throw new Error(dl.error || 'Download failed');
         }
@@ -1512,6 +1542,8 @@ if (appElement) {
 
       const device = await resolveDevice(setup.speechModel, 'auto');
       if (!isModelLoaded() || setup.speechModel !== currentModelId || device !== getCurrentDevice()) {
+        // A voice model that is not downloaded yet fills the button while it downloads.
+        if (!(await isHfModelDownloaded(setup.speechModel))) startButtonProgress(button, setup.speechModel);
         await attemptLoadModel(setup.speechModel);
       }
       showSetupNote('');
@@ -1924,6 +1956,7 @@ if (appElement) {
     const updateProgressUI = (percent: number, message: string, isCompiling = false) => {
       const pctClamped = Math.min(100, Math.max(0, percent));
       const pctStr = `${pctClamped}%`;
+      setButtonProgress(modelId, pctClamped, isCompiling ? 'Loading' : undefined);
 
       if (mainProgress) mainProgress.style.display = 'block';
       if (mainProgressLabel) mainProgressLabel.textContent = message;
@@ -2143,7 +2176,7 @@ if (appElement) {
         mode = 'busy';
         title = `Installing version ${u.newVersion}. WaveScribe restarts by itself.`;
       } else {
-        html = `${icon('arrowUp', 12)}<span>${escapeHtml(target)}</span>`;
+        html = `${icon('arrowUp', 13)}<span>${escapeHtml(target)}</span>`;
         mode = 'ready';
         title = u.status === 'ready'
           ? `Version ${u.newVersion} is ready. Click to restart into it (a few seconds).`
@@ -2578,7 +2611,7 @@ if (appElement) {
 
         let action: string;
         if (isSelected && r.isDownloaded) action = '<span class="badge badge-on">In use</span>';
-        else if (r.downloadProgress !== null) action = `<button class="btn btn-secondary btn-small" disabled>${r.downloadProgress}%</button>`;
+        else if (r.downloadProgress !== null) action = progressButtonHtml(r.id, r.downloadProgress, 'btn btn-secondary btn-small');
         else if (r.isDownloaded) action = '<button class="btn btn-primary btn-small" data-act="use">Use</button>';
         else if (r.fit === 'too-big') action = '';
         else action = `<button class="btn btn-secondary btn-small" data-act="download" ${anyDownload && purpose !== 'speech' ? 'disabled' : ''}>Download</button>`;
@@ -2615,11 +2648,9 @@ if (appElement) {
           await useModel(purpose, r.id);
         });
         row.querySelector('[data-act="download"]')?.addEventListener('click', async (e) => {
+          startButtonProgress(e.currentTarget as HTMLButtonElement, r.id);
           if (purpose === 'speech') {
-            // The voice model downloads as it loads; progress shows in its Settings row.
-            const btn = e.currentTarget as HTMLButtonElement;
-            btn.textContent = 'Downloading…';
-            btn.disabled = true;
+            // The voice model downloads as it loads; attemptLoadModel reports its progress.
             await useModel(purpose, r.id);
             return;
           }
@@ -2680,6 +2711,7 @@ if (appElement) {
   // Live Download Progress listener
   if (window.electronAPI) {
     window.electronAPI.onLlmDownloadProgress((p: any) => {
+      setButtonProgress(p.modelId, p.percent, p.phase === 'verifying' ? 'Checking' : undefined);
       if (llmDownloadBanner) llmDownloadBanner.style.display = 'block';
       if (llmDownloadPct) llmDownloadPct.textContent = `${p.percent}%`;
       if (llmDownloadFill) llmDownloadFill.style.width = `${p.percent}%`;
@@ -2788,7 +2820,7 @@ if (appElement) {
       }
       isGeneratingChat = false;
       btnChatSend.classList.remove('stop-mode');
-      btnChatSend.innerHTML = icon('arrowUp', 18);
+      btnChatSend.innerHTML = icon('arrowUp', 20);
       btnChatSend.title = 'Send message (Enter)';
       return;
     }
@@ -2819,7 +2851,7 @@ if (appElement) {
 
     isGeneratingChat = true;
     btnChatSend.classList.add('stop-mode');
-    btnChatSend.innerHTML = icon('stop', 18);
+    btnChatSend.innerHTML = icon('stop', 20);
     btnChatSend.title = 'Stop output';
     btnChatSend.disabled = false;
 
@@ -2845,7 +2877,7 @@ if (appElement) {
     } finally {
       isGeneratingChat = false;
       btnChatSend.classList.remove('stop-mode');
-      btnChatSend.innerHTML = icon('arrowUp', 18);
+      btnChatSend.innerHTML = icon('arrowUp', 20);
       btnChatSend.title = 'Send message (Enter)';
       btnChatSend.disabled = false;
       currentActiveAssistantBubbleContent = null;

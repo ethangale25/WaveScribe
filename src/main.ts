@@ -139,6 +139,11 @@ function progressButtonHtml(modelId: string, percent: number, className: string)
   return `<button class="${className} btn-progress" data-dl="${escapeHtml(modelId)}" style="--p: ${percent}%;${width ? ` width: ${width}px;` : ''}" disabled><span class="btn-label">${percent}%</span></button>`;
 }
 
+/** "CommandOrControl+Shift+Space" -> "Ctrl + Shift + Space", as shown to the user. */
+function formatHotkey(accelerator: string): string {
+  return accelerator.replace(/CommandOrControl|CmdOrCtrl|Control/g, 'Ctrl').split('+').join(' + ');
+}
+
 // Developer hook used by tools/eval to benchmark CPU thread counts.
 (window as any).__wavescribe = { benchCpuThreads };
 
@@ -216,7 +221,7 @@ if (appElement) {
                <span class="text" id="record-btn-text">Click to Record</span>
                <canvas id="waveform-canvas"></canvas>
              </button>
-             <div class="shortcut-tip">shortcut:  [<span id="hotkey-display">Ctrl+Shift+Space</span>]</div>
+             <div class="shortcut-tip">Shortcut: <span id="hotkey-display">Ctrl + Shift + Space</span></div>
           </div>
           <div id="model-error-actions" style="display:none; margin-top: 10px; display: none; gap: 8px; flex-direction: row; justify-content: center;">
             <button class="btn btn-secondary btn-small" id="model-retry-btn">Retry</button>
@@ -1843,7 +1848,7 @@ if (appElement) {
     markHotkey(ok);
     if (ok) {
       const hotkeyDisplay = document.getElementById('hotkey-display');
-      if (hotkeyDisplay) hotkeyDisplay.textContent = hotkey;
+      if (hotkeyDisplay) hotkeyDisplay.textContent = formatHotkey(hotkey);
     }
   };
 
@@ -1896,7 +1901,7 @@ if (appElement) {
     window.electronAPI.getSettings().then((settings) => {
       if (settings) {
         if (settings.hotkey) {
-          document.getElementById('hotkey-display')!.textContent = settings.hotkey;
+          document.getElementById('hotkey-display')!.textContent = formatHotkey(settings.hotkey);
         }
         if (settings.microphone && settings.microphone !== 'default') {
           setAudioDevice(settings.microphone);

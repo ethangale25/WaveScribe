@@ -283,12 +283,13 @@ if (appElement) {
           </div>
 
           <section class="s-section">
-            <div class="s-head">
-              <h3>Models</h3>
-              <div class="seg" id="setup-cards" role="group" aria-label="Preset"></div>
-            </div>
+            <h3>Models</h3>
             <input type="hidden" id="setting-model" value="">
             <div class="s-card">
+              <div class="s-row preset-row">
+                <span class="s-label">Preset</span>
+                <div class="seg" id="setup-cards" role="radiogroup" aria-label="Preset"></div>
+              </div>
               <button class="m-row" id="row-speech" type="button">
                 <span class="m-icon"><svg viewBox="0 0 24 24"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5.5 11a6.5 6.5 0 0 0 13 0M12 17.5V21"/></svg></span>
                 <span class="m-text"><span class="m-label">Voice to text</span><span class="m-value" id="speech-model-name">…</span></span>
@@ -1449,9 +1450,30 @@ if (appElement) {
     if (!window.electronAPI || isRecording || isProcessing) return;
     if (needsDownload && !confirm(`${setup.name} uses ${setup.llmModelName} for AI cleanup, a ${llmSize} download. Continue?`)) return;
 
-    // The model rows below show download and loading progress while this runs.
+    // Highlight the chosen preset at once; the model rows below show progress while it applies.
+    document.querySelectorAll<HTMLButtonElement>('#setup-cards .seg-btn').forEach(b => {
+      b.classList.toggle('is-active', b === button);
+      b.disabled = true;
+    });
     button.classList.add('is-busy');
-    document.querySelectorAll<HTMLButtonElement>('#setup-cards .seg-btn').forEach(b => { b.disabled = true; });
+    // What each row shows (model, and whether cleanup is on), to flash the ones the preset changes.
+    const rowValues = () => [
+      document.getElementById('speech-model-name')?.textContent,
+      `${document.getElementById('cleanup-model-name')?.textContent}|${inputAiReformat.checked}`,
+    ];
+    const before = rowValues();
+    const flashed = new Set<string>();
+    const flashChangedRows = () => {
+      const after = rowValues();
+      ['row-speech', 'row-cleanup'].forEach((id, i) => {
+        const row = document.getElementById(id);
+        if (!row || before[i] === after[i] || flashed.has(id)) return;
+        flashed.add(id);
+        row.classList.remove('m-row-flash');
+        void row.offsetWidth;
+        row.classList.add('m-row-flash');
+      });
+    };
     try {
       await window.electronAPI.setSetting('model', setup.speechModel);
       await window.electronAPI.setSetting('computeDevice', 'auto');
@@ -1461,13 +1483,17 @@ if (appElement) {
       inputAiReformat.checked = setup.aiCleanup;
       await refreshSettingsModelStatus();
       await updateAiStatusUI();
+      flashChangedRows();
 
       if (setup.aiCleanup && setup.llmModelId) {
         if (needsDownload) {
           const dl = await window.electronAPI.llmDownloadModel(setup.llmModelId);
           if (!dl.success) throw new Error(dl.error || 'Download failed');
         }
-        await window.electronAPI.llmLoadModel(setup.llmModelId);
+        const loading = window.electronAPI.llmLoadModel(setup.llmModelId);
+        await updateAiStatusUI();
+        flashChangedRows();
+        await loading;
         await updateAiStatusUI();
       }
 
@@ -1486,7 +1512,11 @@ if (appElement) {
     }
   };
 
-  /** Fast / Balanced / Precise: one tap sets the voice model and text cleanup together. */
+  /**
+   * Fast / Balanced / Precise set the voice model and text cleanup together. The highlight always
+   * follows the models actually in use: a preset lights up whenever they match it exactly, however
+   * they were chosen, and "Custom" lights up when they match none.
+   */
   const renderSetupCards = async () => {
     const host = document.getElementById('setup-cards');
     if (!host) return;
@@ -1495,25 +1525,44 @@ if (appElement) {
     const plan = buildSetups(hw, speedSamples);
     const settings = window.electronAPI ? await window.electronAPI.getSettings() : null;
     const catalog: any[] = window.electronAPI ? await window.electronAPI.llmGetCatalog() : [];
+    const cleanupModelId = window.electronAPI ? (await window.electronAPI.llmStatus()).activeModelId : null;
+    const speechModel = settings?.model || DEFAULT_MODEL_ID;
+    const cleanupOn = !!settings?.aiReformat;
+
+    const matches = (setup: Setup) => speechModel === setup.speechModel
+      && cleanupOn === setup.aiCleanup
+      && (!setup.aiCleanup || cleanupModelId === setup.llmModelId);
+    const activeId = plan.setups.find(matches)?.id ?? null;
 
     host.innerHTML = '';
     for (const setup of plan.setups) {
       const llm = catalog.find(m => m.id === setup.llmModelId);
       const needsDownload = setup.aiCleanup && !!llm && !llm.isDownloaded;
-      const isActive = settings?.model === setup.speechModel
-        && !!settings?.aiReformat === setup.aiCleanup
-        && (!setup.aiCleanup || !settings?.llmModelId || settings.llmModelId === setup.llmModelId);
+      const isActive = setup.id === activeId;
       const unavailable = setup.fit === 'unavailable';
 
       const button = document.createElement('button');
       button.type = 'button';
+      button.setAttribute('role', 'radio');
+      button.setAttribute('aria-checked', String(isActive));
       button.className = 'seg-btn' + (isActive ? ' is-active' : '') + (setup.id === plan.recommendedId ? ' is-rec' : '');
       button.textContent = setup.name;
       button.disabled = unavailable;
-      button.title = `${setup.tagline} ${setup.typicalDelay}.${setup.id === plan.recommendedId ? ' Recommended for this PC.' : ''}${unavailable ? ` ${setup.fitNote}.` : ''}`;
-      button.addEventListener('click', () => { if (!isActive) applySetup(setup, button, llm?.sizeText ?? null, needsDownload); });
+      const parts = [setup.speechModelName, setup.aiCleanup ? `${setup.llmModelName} cleanup` : 'no AI cleanup'];
+      button.title = `${setup.tagline} ${parts.join(' + ')}.${setup.id === plan.recommendedId ? ' Recommended for this PC.' : ''}${unavailable ? ` ${setup.fitNote}.` : ''}`;
+      button.addEventListener('click', () => { if (!button.classList.contains('is-active')) applySetup(setup, button, llm?.sizeText ?? null, needsDownload); });
       host.appendChild(button);
     }
+
+    // Shown, not clicked: it lights up when the models below are your own mix.
+    const custom = document.createElement('span');
+    custom.className = 'seg-btn seg-custom' + (activeId ? '' : ' is-active');
+    custom.setAttribute('role', 'radio');
+    custom.setAttribute('aria-checked', String(!activeId));
+    custom.setAttribute('aria-disabled', 'true');
+    custom.textContent = 'Custom';
+    custom.title = 'Your own choice of models. Pick a preset to replace it.';
+    host.appendChild(custom);
   };
 
   document.getElementById('btn-speed-test')?.addEventListener('click', async () => {

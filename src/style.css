@@ -2531,7 +2531,11 @@ body.mini-mode #island-dot {
   transform: rotate(90deg);
 }
 
-/* Preset switch (Fast / Balanced / Precise) in the Models header */
+/* Preset switch (Fast / Balanced / Precise / Custom), the first row of the Models card */
+.preset-row {
+  padding: 9px 14px;
+}
+
 .seg {
   display: inline-flex;
   padding: 2px;
@@ -2566,6 +2570,21 @@ body.mini-mode #island-dot {
 .seg-btn:disabled {
   opacity: 0.45;
   cursor: default;
+}
+
+/* Applying a preset disables the switch, but the chosen one stays fully visible. */
+.seg-btn.is-active:disabled {
+  opacity: 1;
+}
+
+/* "Custom" only reports state: it lights up when the models match no preset. */
+.seg-custom {
+  cursor: default;
+}
+
+.seg-custom.is-active {
+  background: rgba(128, 128, 128, 0.35);
+  color: var(--text-primary);
 }
 
 /* A small dot marks the preset recommended for this PC. */
@@ -2611,6 +2630,16 @@ body.mini-mode #island-dot {
 
 .m-row:hover {
   background: rgba(128, 128, 128, 0.07);
+}
+
+/* A model row a preset just changed. */
+.m-row-flash {
+  animation: rowFlash 1.2s ease-out;
+}
+
+@keyframes rowFlash {
+  0%, 25% { background: rgba(43, 85, 245, 0.18); }
+  100% { background: transparent; }
 }
 
 .m-row:focus-visible {

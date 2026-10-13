@@ -35,8 +35,33 @@ import { initAutoUpdate } from './updater'
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
 
+// Windows takes the taskbar icon from a Start Menu shortcut carrying the app's ID. The installed
+// app's shortcut uses that ID; a development build has its own ID, or Windows would mix the two up
+// and could show the bare Electron icon (Electron auto-creates such a shortcut for notifications).
+const APP_USER_MODEL_ID = app.isPackaged ? 'com.wavescribe.app' : 'com.wavescribe.app.dev'
 if (process.platform === 'win32') {
-    app.setAppUserModelId('com.wavescribe.app')
+    app.setAppUserModelId(APP_USER_MODEL_ID)
+}
+
+/** Gives the development build a Start Menu shortcut with the WaveScribe icon (see above). */
+function ensureDevShortcut(): void {
+    if (process.platform !== 'win32' || app.isPackaged) return
+    const iconPath = getAppIconPath()
+    if (!iconPath.endsWith('.ico')) return
+    const link = path.join(app.getPath('appData'), 'Microsoft', 'Windows', 'Start Menu', 'Programs', 'WaveScribe (dev).lnk')
+    try {
+        shell.writeShortcutLink(link, fs.existsSync(link) ? 'replace' : 'create', {
+            target: process.execPath,
+            args: `"${app.getAppPath()}"`,
+            cwd: app.getAppPath(),
+            description: 'WaveScribe development build',
+            icon: iconPath,
+            iconIndex: 0,
+            appUserModelId: APP_USER_MODEL_ID,
+        })
+    } catch (err) {
+        console.warn('Could not write the development shortcut:', err)
+    }
 }
 
 // The app is served from its own origin (app://wavescribe) instead of file:// so the page can be
@@ -346,6 +371,7 @@ app.on('second-instance', () => {
 app.whenReady().then(async () => {
     if (!gotSingleInstanceLock) return
     Menu.setApplicationMenu(null)
+    ensureDevShortcut()
     registerAppProtocol()
     // Warm the GPU-memory probe in the background so nothing ever blocks on it later.
     probeGpuVram().catch(() => { })

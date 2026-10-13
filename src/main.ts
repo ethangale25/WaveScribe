@@ -43,8 +43,8 @@ declare global {
       toggleMiniMode: (isMini: boolean) => Promise<{ success: boolean }>
       onWindowMaximized: (callback: (isMax: boolean) => void) => () => void
       setWindowBounds: (bounds: any) => Promise<{ success: boolean }>
-      showCursorSpinner: () => Promise<{ success: boolean }>
-      primeCaret: () => Promise<{ success: boolean }>
+      showCursorSpinner: (mode?: 'listening' | 'working') => Promise<{ success: boolean }>
+      caretIndicatorLevel: (level: number) => void
       hideCursorSpinner: () => Promise<{ success: boolean }>
       getVramMb: () => Promise<number | null>
       getHardwareProfile: () => Promise<{
@@ -738,6 +738,7 @@ if (appElement) {
   let volumeHistory: number[] = new Array(120).fill(0);
   let lastDrawTime = 0;
   let smoothedAmplitude = 0;
+  let levelFrame = 0;
 
   // Cache elements and styles for performance
   const waveformCanvas = document.getElementById('waveform-canvas') as HTMLCanvasElement;
@@ -780,6 +781,11 @@ if (appElement) {
     volumeHistory.push(smoothedAmplitude);
     if (volumeHistory.length > 120) {
       volumeHistory.shift();
+    }
+
+    // Feed the caret indicator about 30 times a second, on the same scale as the bars drawn here.
+    if (isRecording && window.electronAPI && ++levelFrame % 2 === 0) {
+      window.electronAPI.caretIndicatorLevel(Math.min(1, (smoothedAmplitude / 128) * 3.5));
     }
 
     waveformCtx.clearRect(0, 0, waveformCanvas.width, waveformCanvas.height);
@@ -864,9 +870,9 @@ if (appElement) {
       if (islandDot) islandDot.className = 'status-indicator loading';
       if (islandText) islandText.textContent = 'Processing...';
 
-      // Show cursor spinner at caret position
+      // The caret indicator switches from listening to working while the speech is transcribed.
       if (window.electronAPI) {
-        window.electronAPI.showCursorSpinner().catch(() => { });
+        window.electronAPI.showCursorSpinner('working').catch(() => { });
       }
 
       try {
@@ -1139,9 +1145,8 @@ if (appElement) {
           startSound.play().catch(e => console.warn("Could not play start sound:", e));
         }
 
-        // Look up the caret position now, while the CPU is idle, so the spinner can appear
-        // instantly when recording stops.
-        window.electronAPI?.primeCaret().catch(() => { });
+        // Show the indicator at the text caret while the user talks; its bars follow their voice.
+        window.electronAPI?.showCursorSpinner('listening').catch(() => { });
 
         // Reset volume history on new recording
         volumeHistory.fill(0);

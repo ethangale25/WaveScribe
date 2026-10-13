@@ -27,7 +27,7 @@ import {
 } from './llm'
 import { captureContext } from './context-capture'
 import { locateCaret, warmUpCaretLocator, stopCaretLocator, CaretRect } from './caret'
-import { INDICATOR_HTML, INDICATOR_SIZE } from './caret-indicator'
+import { INDICATOR_HTML, INDICATOR_SIZE, IndicatorMode } from './caret-indicator'
 import { sendCtrlV, isKeyDown } from './win32'
 import { mainKeyVirtualCode } from './hotkey'
 import { initAutoUpdate } from './updater'
@@ -109,13 +109,22 @@ function registerAppProtocol() {
 const store = new Store() as any
 
 // Only one instance may run: a second one cannot register the global hotkey and would add a second tray icon.
-// One copy of the installed app at a time. Development builds share its settings folder (and so its
-// lock), so they stay out of it: otherwise opening the installed app while a dev copy runs would just
-// bring the dev window forward and quit.
-const gotSingleInstanceLock = app.isPackaged ? app.requestSingleInstanceLock() : true
-if (!gotSingleInstanceLock) {
-    app.quit()
-}
+// One copy at a time, so only one owns the dictation hotkey. Opening the same build again brings
+// its window forward. The installed app and a development copy share a settings folder (and so this
+// lock); between those two, the one opened last wins: the running one closes and the new one waits
+// for it, instead of the new one quitting and leaving the user in the copy they did not open.
+// WAVESCRIBE_INSTANCE_KIND lets automated tests stand in for the other kind.
+const INSTANCE_KIND = process.env.WAVESCRIBE_INSTANCE_KIND || (app.isPackaged ? 'installed' : 'dev')
+const instanceLock: Promise<boolean> = (async () => {
+    if (app.requestSingleInstanceLock({ kind: INSTANCE_KIND })) return true
+    // A copy of the other kind is closing for us: take over once it has gone. A copy of the same
+    // kind stays open, so this gives up after a few seconds.
+    for (let i = 0; i < 30; i++) {
+        await new Promise(r => setTimeout(r, 200))
+        if (app.requestSingleInstanceLock({ kind: INSTANCE_KIND })) return true
+    }
+    return false
+})()
 
 let isQuitting = false
 app.on('before-quit', () => { isQuitting = true })
@@ -363,7 +372,14 @@ function createWindow() {
     setTimeout(warmUpCaretLocator, 3000)
 }
 
-app.on('second-instance', () => {
+app.on('second-instance', (_event, _argv, _cwd, data) => {
+    // The other build was opened: step aside for it (see INSTANCE_KIND above).
+    const kind = (data as { kind?: string } | undefined)?.kind
+    if (kind && kind !== INSTANCE_KIND) {
+        isQuitting = true
+        app.quit()
+        return
+    }
     if (mainWindow) {
         if (mainWindow.isMinimized()) mainWindow.restore()
         mainWindow.show()
@@ -372,7 +388,10 @@ app.on('second-instance', () => {
 })
 
 app.whenReady().then(async () => {
-    if (!gotSingleInstanceLock) return
+    if (!(await instanceLock)) {
+        app.quit()
+        return
+    }
     Menu.setApplicationMenu(null)
     ensureDevShortcut()
     registerAppProtocol()
@@ -626,38 +645,41 @@ function caretToDip(caret: CaretRect): { x: number, y: number, height: number } 
 let primedCaret: CaretRect | null = null;
 // Bumped on every show/hide so a slow lookup cannot show the indicator after it was hidden.
 let indicatorRequest = 0;
+let indicatorMode: IndicatorMode | null = null;
 
-ipcMain.handle('prime-caret', () => {
-    primedCaret = null;
-    locateCaret(1500).then((caret) => { primedCaret = caret; }).catch(() => { });
-    return { success: true };
-});
+/** Places the indicator just right of the caret, centred on its line, on the caret's own monitor. */
+function placeIndicator(caret: CaretRect): void {
+    if (!spinnerWindow) return;
+    const pos = caretToDip(caret);
+    const area = screen.getDisplayNearestPoint({ x: Math.round(pos.x), y: Math.round(pos.y) }).workArea;
+    const { width, height } = INDICATOR_SIZE;
+    let x = Math.round(pos.x + 6);
+    let y = Math.round(pos.y + pos.height / 2 - height / 2);
+    if (x + width > area.x + area.width) x = Math.round(pos.x - 6 - width);
+    x = Math.max(area.x, Math.min(x, area.x + area.width - width));
+    y = Math.max(area.y, Math.min(y, area.y + area.height - height));
+    spinnerWindow.setBounds({ x, y, width, height });
+}
 
-ipcMain.handle('show-cursor-spinner', async () => {
+// 'listening' when recording starts (bars follow the voice), 'working' when it stops (ripple while
+// the speech is transcribed). The indicator follows the caret, never the mouse pointer.
+ipcMain.handle('show-cursor-spinner', async (_event, mode: IndicatorMode = 'working') => {
     if (!spinnerWindow || process.env.WAVESCRIBE_TEST_DISPLAY_POINT) return { success: false };
     const request = ++indicatorRequest;
-    // Where the text will go now; the caret can have moved since recording started.
-    const caret = (await locateCaret(300)) ?? primedCaret;
+    // At the start, where the user is dictating; at the end, where the text will go now (the caret
+    // can have moved while they talked).
+    const found = await locateCaret(mode === 'listening' ? 1500 : 300);
     if (request !== indicatorRequest || !spinnerWindow) return { success: false };
-    // No caret means no sensible place to show it: never fall back to the mouse pointer.
-    if (!caret) return { success: false };
+    if (mode === 'listening') primedCaret = found;
+    const caret = found ?? primedCaret;
+    const wasVisible = spinnerWindow.isVisible();
+    // No caret means no sensible place to show it, unless it is already showing from the start.
+    if (!caret && !wasVisible) return { success: false };
     try {
-        const pos = caretToDip(caret);
-        const display = screen.getDisplayNearestPoint({ x: Math.round(pos.x), y: Math.round(pos.y) });
-        const area = display.workArea;
-        const { width, height } = INDICATOR_SIZE;
-        // Just right of the caret, centred on its line, kept on the caret's own monitor.
-        let x = Math.round(pos.x + 6);
-        let y = Math.round(pos.y + pos.height / 2 - height / 2);
-        if (x + width > area.x + area.width) x = Math.round(pos.x - 6 - width);
-        x = Math.max(area.x, Math.min(x, area.x + area.width - width));
-        y = Math.max(area.y, Math.min(y, area.y + area.height - height));
-        spinnerWindow.setBounds({ x, y, width, height });
-        // Replay the entrance animation each time it appears.
-        spinnerWindow.webContents.executeJavaScript(
-            "{const p=document.querySelector('.pill');p.style.animation='none';void p.offsetWidth;p.style.animation=''}"
-        ).catch(() => { });
-        spinnerWindow.showInactive();
+        if (caret) placeIndicator(caret);
+        indicatorMode = mode;
+        spinnerWindow.webContents.executeJavaScript(`setMode(${JSON.stringify(mode)}, ${!wasVisible})`).catch(() => { });
+        if (!wasVisible) spinnerWindow.showInactive();
         return { success: true };
     } catch (err) {
         console.error('Failed to show caret indicator:', err);
@@ -665,8 +687,15 @@ ipcMain.handle('show-cursor-spinner', async () => {
     }
 });
 
+// Live voice level (0 to 1) while listening, sent many times a second, so fire-and-forget.
+ipcMain.on('caret-indicator-level', (_event, level: number) => {
+    if (indicatorMode !== 'listening' || !spinnerWindow?.isVisible()) return;
+    spinnerWindow.webContents.executeJavaScript(`setLevel(${Number(level) || 0})`).catch(() => { });
+});
+
 ipcMain.handle('hide-cursor-spinner', () => {
     indicatorRequest++;
+    indicatorMode = null;
     spinnerWindow?.hide();
     return { success: true };
 });

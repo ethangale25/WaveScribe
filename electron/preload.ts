@@ -19,9 +19,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
         return () => { ipcRenderer.removeListener('window-maximized', handler); }
     },
     setWindowBounds: (bounds: any) => ipcRenderer.invoke('set-window-bounds', bounds),
-    showCursorSpinner: () => ipcRenderer.invoke('show-cursor-spinner'),
+    showCursorSpinner: (mode?: 'listening' | 'working') => ipcRenderer.invoke('show-cursor-spinner', mode),
+    caretIndicatorLevel: (level: number) => ipcRenderer.send('caret-indicator-level', level),
     hideCursorSpinner: () => ipcRenderer.invoke('hide-cursor-spinner'),
-    primeCaret: () => ipcRenderer.invoke('prime-caret'),
     getVramMb: () => ipcRenderer.invoke('get-vram-mb'),
     getHardwareProfile: () => ipcRenderer.invoke('get-hardware-profile'),
     llmInit: (download?: boolean) => ipcRenderer.invoke('llm-init', download),

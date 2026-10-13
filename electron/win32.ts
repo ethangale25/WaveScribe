@@ -11,7 +11,6 @@ const VK_V = 0x56
 
 interface Win32Api {
     sendInput: (inputs: any[], size: number) => number
-    getCursorPos: (out: { x: number; y: number }) => boolean
     getAsyncKeyState: (vk: number) => number
     inputSize: number
 }
@@ -42,16 +41,13 @@ function load(): Win32Api | null {
         })
         const INPUT_U = koffi.union('INPUT_U', { ki: KEYBDINPUT, mi: MOUSEINPUT })
         const INPUT = koffi.struct('INPUT', { type: 'uint32', u: INPUT_U })
-        const POINT = koffi.struct('POINT', { x: 'int32', y: 'int32' })
 
         const SendInput = user32.func('uint32 SendInput(uint32 cInputs, INPUT *pInputs, int cbSize)')
-        const GetCursorPos = user32.func('bool GetCursorPos(_Out_ POINT *lpPoint)')
         const GetAsyncKeyState = user32.func('int16 GetAsyncKeyState(int vKey)')
 
         api = {
             inputSize: koffi.sizeof(INPUT),
             sendInput: (inputs, size) => SendInput(inputs.length, inputs, size),
-            getCursorPos: (out) => GetCursorPos(out),
             getAsyncKeyState: (vk) => GetAsyncKeyState(vk),
         }
     } catch (err) {
@@ -75,18 +71,6 @@ export function sendCtrlV(): boolean {
     } catch (err) {
         console.warn('[win32] SendInput failed:', err)
         return false
-    }
-}
-
-/** Current mouse position in screen pixels, or null if unavailable. */
-export function getCursorPosition(): { x: number; y: number } | null {
-    const w = load()
-    if (!w) return null
-    try {
-        const pt = { x: 0, y: 0 }
-        return w.getCursorPos(pt) ? pt : null
-    } catch {
-        return null
     }
 }
 

@@ -25,7 +25,9 @@ import {
     getCleanupModelId
 } from './llm'
 import { captureContext } from './context-capture'
-import { sendCtrlV, getCursorPosition, isKeyDown } from './win32'
+import { locateCaret, warmUpCaretLocator, stopCaretLocator, CaretRect } from './caret'
+import { INDICATOR_HTML, INDICATOR_SIZE } from './caret-indicator'
+import { sendCtrlV, isKeyDown } from './win32'
 import { mainKeyVirtualCode } from './hotkey'
 import { initAutoUpdate } from './updater'
 
@@ -307,10 +309,10 @@ function createWindow() {
         } catch (_) { }
     }
 
-    // Create the spinner overlay window (hidden until needed)
+    // The caret indicator window (hidden until a dictation is being transcribed)
     spinnerWindow = new BrowserWindow({
-        width: 40,
-        height: 40,
+        width: INDICATOR_SIZE.width,
+        height: INDICATOR_SIZE.height,
         transparent: true,
         frame: false,
         resizable: false,
@@ -325,10 +327,11 @@ function createWindow() {
         },
     })
     spinnerWindow.setIgnoreMouseEvents(true)
+    spinnerWindow.setAlwaysOnTop(true, 'screen-saver')
+    spinnerWindow.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(INDICATOR_HTML)}`)
 
-    // Inline the spinner HTML as a data URI so it works in both dev and production
-    const spinnerHTML = `<!DOCTYPE html><html><head><meta charset="UTF-8"><style>*{margin:0;padding:0}html,body{width:100%;height:100%;background:transparent;overflow:hidden;display:flex;align-items:center;justify-content:center}.spinner{box-sizing:border-box;width:24px;height:24px;border:3.5px solid rgba(245,158,11,0.25);border-top-color:#f59e0b;border-radius:50%;animation:spin .65s linear infinite;filter:drop-shadow(0 2px 4px rgba(0,0,0,0.3))}@keyframes spin{to{transform:rotate(360deg)}}</style></head><body><div class="spinner"></div></body></html>`;
-    spinnerWindow.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(spinnerHTML)}`)
+    // Compile the caret helper in the background so the first dictation does not wait for it.
+    setTimeout(warmUpCaretLocator, 3000)
 }
 
 app.on('second-instance', () => {
@@ -377,6 +380,7 @@ app.on('window-all-closed', function () {
 
 app.on('will-quit', () => {
     if (holdTimer) clearInterval(holdTimer)
+    stopCaretLocator()
     globalShortcut.unregisterAll()
 })
 
@@ -579,184 +583,61 @@ ipcMain.handle('toggle-mini-mode', (event, isMini: boolean) => {
     return { success: true };
 });
 
-// --- Cursor-Position Spinner ---
+// --- Caret indicator ---
 
-function getCaretScreenPosition(): Promise<{ x: number, y: number }> {
-    return new Promise((resolve) => {
-        const uniqueId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-        const scriptPath = path.join(app.getPath('temp'), `get-caret-${uniqueId}.ps1`);
-
-        const ps1 = `
-Add-Type -AssemblyName UIAutomationClient
-Add-Type -AssemblyName UIAutomationTypes
-
-Add-Type -TypeDefinition @"
-using System;
-using System.Runtime.InteropServices;
-
-public struct POINT { public int X; public int Y; }
-
-[StructLayout(LayoutKind.Sequential)]
-public struct RECT { public int Left; public int Top; public int Right; public int Bottom; }
-
-[StructLayout(LayoutKind.Sequential)]
-public struct GUITHREADINFO {
-    public int cbSize;
-    public int flags;
-    public IntPtr hwndActive;
-    public IntPtr hwndFocus;
-    public IntPtr hwndCapture;
-    public IntPtr hwndMenuOwner;
-    public IntPtr hwndMoveSize;
-    public IntPtr hwndCaret;
-    public RECT rcCaret;
+/** Converts the helper's physical-pixel caret into window coordinates (DIP) on its own monitor. */
+function caretToDip(caret: CaretRect): { x: number, y: number, height: number } {
+    const topLeft = screen.screenToDipPoint({ x: caret.x + caret.width, y: caret.y })
+    const scale = screen.getDisplayNearestPoint(topLeft).scaleFactor || 1
+    return { x: topLeft.x, y: topLeft.y, height: caret.height / scale }
 }
 
-public class Win32Caret {
-    [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
-    [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint lpdwProcessId);
-    [DllImport("user32.dll")] public static extern bool GetGUIThreadInfo(uint idThread, ref GUITHREADINFO lpgui);
-    [DllImport("user32.dll")] public static extern bool ClientToScreen(IntPtr hWnd, ref POINT lpPoint);
-    [DllImport("user32.dll")] public static extern bool GetCursorPos(out POINT lpPoint);
-
-    public static string GetWin32Caret() {
-        try {
-            IntPtr fg = GetForegroundWindow();
-            if (fg != IntPtr.Zero) {
-                uint pid;
-                uint tid = GetWindowThreadProcessId(fg, out pid);
-                var gui = new GUITHREADINFO();
-                gui.cbSize = Marshal.SizeOf(gui);
-                if (GetGUIThreadInfo(tid, ref gui)) {
-                    IntPtr target = gui.hwndCaret != IntPtr.Zero ? gui.hwndCaret : gui.hwndFocus;
-                    if (target != IntPtr.Zero && (gui.rcCaret.Right > gui.rcCaret.Left || gui.rcCaret.Bottom > gui.rcCaret.Top || gui.rcCaret.Left != 0 || gui.rcCaret.Top != 0)) {
-                        var pt = new POINT { X = gui.rcCaret.Left, Y = gui.rcCaret.Top };
-                        ClientToScreen(target, ref pt);
-                        if (pt.X > 0 || pt.Y > 0) return pt.X + "," + pt.Y;
-                    }
-                }
-            }
-        } catch {}
-        return "";
-    }
-
-    public static string GetMouse() {
-        POINT mouse;
-        GetCursorPos(out mouse);
-        return mouse.X + "," + mouse.Y;
-    }
-}
-"@
-
-$pos = $null
-
-# 1. Check UI Automation (Chrome, Edge, Word, VSCode, Slack, Notepad, Discord, etc.)
-try {
-    $focused = [System.Windows.Automation.AutomationElement]::FocusedElement
-    $root = [System.Windows.Automation.AutomationElement]::RootElement
-    if ($focused -and $focused -ne $root) {
-        $pattern = $null
-        if ($focused.TryGetCurrentPattern([System.Windows.Automation.TextPattern]::Pattern, [ref]$pattern)) {
-            $selection = $pattern.GetSelection()
-            if ($selection -and $selection.Length -gt 0) {
-                $rects = $selection[0].GetBoundingRectangles()
-                if ($rects -and $rects.Length -gt 0) {
-                    $r = $rects[0]
-                    if ($r.Left -gt 0 -or $r.Top -gt 0) {
-                        $pos = "$([int]$r.Left),$([int]$r.Top)"
-                    }
-                }
-            }
-        }
-        
-        # If text selection is not available, check if focused element is an Edit/Document control
-        if (-not $pos) {
-            $cType = $focused.Current.ControlType
-            if ($cType -eq [System.Windows.Automation.ControlType]::Edit -or $cType -eq [System.Windows.Automation.ControlType]::Document) {
-                $b = $focused.Current.BoundingRectangle
-                if ($b -and $b.Width -gt 0 -and $b.Height -gt 0 -and ($b.Left -gt 0 -or $b.Top -gt 0)) {
-                    $pos = "$([int]($b.Left + 4)),$([int]($b.Top + 4))"
-                }
-            }
-        }
-    }
-} catch {}
-
-# 2. Check Win32 Foreground Thread Caret (Notepad, WordPad, native dialogs)
-if (-not $pos) {
-    $win32Pos = [Win32Caret]::GetWin32Caret()
-    if ($win32Pos) {
-        $pos = $win32Pos
-    }
-}
-
-# 3. Fallback to mouse cursor
-if (-not $pos) {
-    $pos = [Win32Caret]::GetMouse()
-}
-
-[Console]::Out.Write($pos)
-        `;
-
-        fs.writeFileSync(scriptPath, ps1, 'utf-8');
-
-        let output = '';
-        const proc = spawn('powershell', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', scriptPath], { windowsHide: true });
-
-        proc.stdout.on('data', (data: Buffer) => { output += data.toString(); });
-
-        proc.on('close', () => {
-            try { if (fs.existsSync(scriptPath)) fs.unlinkSync(scriptPath); } catch (_) { }
-            const parts = output.trim().split(',');
-            if (parts.length === 2) {
-                resolve({ x: parseInt(parts[0], 10), y: parseInt(parts[1], 10) });
-            } else {
-                const display = screen.getPrimaryDisplay();
-                resolve({ x: display.bounds.width / 2, y: display.bounds.height / 2 });
-            }
-        });
-
-        proc.on('error', () => {
-            const display = screen.getPrimaryDisplay();
-            resolve({ x: display.bounds.width / 2, y: display.bounds.height / 2 });
-        });
-    });
-}
-
-// The UI Automation caret lookup is slow (PowerShell + C# compile), so it runs when recording
-// STARTS, while the CPU is idle, instead of on the critical path when recording stops.
-let cachedCaret: { x: number, y: number } | null = null;
+// The caret where the user started dictating, used if the lookup at the end is too slow.
+let primedCaret: CaretRect | null = null;
+// Bumped on every show/hide so a slow lookup cannot show the indicator after it was hidden.
+let indicatorRequest = 0;
 
 ipcMain.handle('prime-caret', () => {
-    cachedCaret = null;
-    getCaretScreenPosition()
-        .then((pos) => { cachedCaret = pos; })
-        .catch(() => { });
+    primedCaret = null;
+    locateCaret(1500).then((caret) => { primedCaret = caret; }).catch(() => { });
     return { success: true };
 });
 
-ipcMain.handle('show-cursor-spinner', () => {
+ipcMain.handle('show-cursor-spinner', async () => {
     if (!spinnerWindow || process.env.WAVESCRIBE_TEST_DISPLAY_POINT) return { success: false };
+    const request = ++indicatorRequest;
+    // Where the text will go now; the caret can have moved since recording started.
+    const caret = (await locateCaret(300)) ?? primedCaret;
+    if (request !== indicatorRequest || !spinnerWindow) return { success: false };
+    // No caret means no sensible place to show it: never fall back to the mouse pointer.
+    if (!caret) return { success: false };
     try {
-        // Use the primed caret if ready, otherwise the mouse position. Never wait on PowerShell here.
-        const pos = cachedCaret ?? getCursorPosition() ?? (() => {
-            const display = screen.getPrimaryDisplay();
-            return { x: display.bounds.width / 2, y: display.bounds.height / 2 };
-        })();
-        // Offset slightly right and above/level with the caret so it aligns with the text insertion point
-        spinnerWindow.setBounds({ x: pos.x + 2, y: pos.y - 4, width: 36, height: 36 });
+        const pos = caretToDip(caret);
+        const display = screen.getDisplayNearestPoint({ x: Math.round(pos.x), y: Math.round(pos.y) });
+        const area = display.workArea;
+        const { width, height } = INDICATOR_SIZE;
+        // Just right of the caret, centred on its line, kept on the caret's own monitor.
+        let x = Math.round(pos.x + 6);
+        let y = Math.round(pos.y + pos.height / 2 - height / 2);
+        if (x + width > area.x + area.width) x = Math.round(pos.x - 6 - width);
+        x = Math.max(area.x, Math.min(x, area.x + area.width - width));
+        y = Math.max(area.y, Math.min(y, area.y + area.height - height));
+        spinnerWindow.setBounds({ x, y, width, height });
+        // Replay the entrance animation each time it appears.
+        spinnerWindow.webContents.executeJavaScript(
+            "{const p=document.querySelector('.pill');p.style.animation='none';void p.offsetWidth;p.style.animation=''}"
+        ).catch(() => { });
         spinnerWindow.showInactive();
         return { success: true };
     } catch (err) {
-        console.error('Failed to show spinner:', err);
+        console.error('Failed to show caret indicator:', err);
         return { success: false };
     }
 });
 
 ipcMain.handle('hide-cursor-spinner', () => {
-    if (spinnerWindow) {
-        spinnerWindow.hide();
-    }
+    indicatorRequest++;
+    spinnerWindow?.hide();
     return { success: true };
 });
 

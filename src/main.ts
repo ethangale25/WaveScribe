@@ -1260,15 +1260,28 @@ if (appElement) {
     });
   }
 
+  // Where the voice model in use stands, kept up to date by attemptLoadModel.
+  let speechLoadState: 'loading' | 'ready' | 'error' = 'loading';
+  let speechStatusRequest = 0;
+
   /** Voice to text row. */
   const refreshSettingsModelStatus = async () => {
+    const request = ++speechStatusRequest;
     const selectedModel = inputModel?.value || DEFAULT_MODEL_ID;
     setText('speech-model-name', MODEL_DETAILS[selectedModel]?.name || selectedModel);
     const progress = document.getElementById('settings-model-progress');
     if (progress && progress.style.display === 'block') return; // the progress bar is speaking for it
-    if (isModelLoaded() && currentModelId === selectedModel) setRowStatus('speech-model-status', 'Ready', 'ok');
-    else if (await isHfModelDownloaded(selectedModel)) setRowStatus('speech-model-status', 'Loading', 'busy');
-    else setRowStatus('speech-model-status', 'Not downloaded', 'warn');
+    if (currentModelId === selectedModel) {
+      if (speechLoadState === 'ready') setRowStatus('speech-model-status', 'Ready', 'ok');
+      else if (speechLoadState === 'loading') setRowStatus('speech-model-status', 'Loading', 'busy');
+      else setRowStatus('speech-model-status', 'Failed to load', 'warn');
+      return;
+    }
+    // Chosen but not the one in use: say whether it still needs downloading. The cache lookup can
+    // take seconds, so drop the answer if a newer check has already run.
+    const downloaded = await isHfModelDownloaded(selectedModel);
+    if (request !== speechStatusRequest) return;
+    setRowStatus('speech-model-status', downloaded ? 'Not loaded' : 'Not downloaded', downloaded ? 'off' : 'warn');
   };
 
   // Refresh model status on device change
@@ -1822,6 +1835,7 @@ if (appElement) {
 
   const attemptLoadModel = async (modelId: string) => {
     currentModelId = modelId;
+    speechLoadState = 'loading';
     // Hide error buttons while loading
     if (modelErrorActions) modelErrorActions.style.display = 'none';
 
@@ -1899,6 +1913,7 @@ if (appElement) {
     const fileMap = new Map<string, { loaded: number; total: number; progress: number; done: boolean }>();
 
     const setModelReadyUI = () => {
+      speechLoadState = 'ready';
       if (mainProgress) mainProgress.style.display = 'none';
       if (settingsProgress) settingsProgress.style.display = 'none';
       statusDot!.className = 'status-indicator green flash';
@@ -1980,8 +1995,10 @@ if (appElement) {
 
     const handleLoadError = (err: any) => {
       console.error('Failed to load model', err);
+      speechLoadState = 'error';
       if (mainProgress) mainProgress.style.display = 'none';
       if (settingsProgress) settingsProgress.style.display = 'none';
+      refreshSettingsModelStatus().catch(() => {});
       statusDot!.className = 'status-indicator red';
       statusMessage!.textContent = 'Model error';
       const islandDot = document.getElementById('island-dot');

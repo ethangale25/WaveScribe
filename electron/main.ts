@@ -109,7 +109,10 @@ function registerAppProtocol() {
 const store = new Store() as any
 
 // Only one instance may run: a second one cannot register the global hotkey and would add a second tray icon.
-const gotSingleInstanceLock = app.requestSingleInstanceLock()
+// One copy of the installed app at a time. Development builds share its settings folder (and so its
+// lock), so they stay out of it: otherwise opening the installed app while a dev copy runs would just
+// bring the dev window forward and quit.
+const gotSingleInstanceLock = app.isPackaged ? app.requestSingleInstanceLock() : true
 if (!gotSingleInstanceLock) {
     app.quit()
 }

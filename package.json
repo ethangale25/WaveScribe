@@ -9,6 +9,7 @@
     "prebuild": "node scripts/copy-ort.mjs",
     "build": "vite build && electron-builder",
     "eval:build": "esbuild tools/eval/run.ts --bundle --platform=node --format=esm --outfile=tools/eval/run.mjs --external:@huggingface/transformers --external:onnxruntime-node --external:sharp --log-level=warning",
+    "icons": "node scripts/make-icons.mjs",
     "test": "esbuild tests/text-pipeline.test.ts --bundle --platform=node --format=esm --outfile=.test-build/text-pipeline.test.mjs --log-level=warning && node --test .test-build/text-pipeline.test.mjs"
   },
   "keywords": [],
@@ -23,6 +24,7 @@
     "electron": "^44.7.0",
     "electron-builder": "^26.8.1",
     "marked": "^15.0.12",
+    "sharp": "^0.35.5",
     "typescript": "^5.9.3",
     "vite": "^7.3.1",
     "vite-plugin-electron": "^0.29.0",
@@ -53,7 +55,13 @@
     "nsis": {
       "oneClick": false,
       "allowToChangeInstallationDirectory": true,
-      "createDesktopShortcut": true
+      "createDesktopShortcut": true,
+      "installerIcon": "assets/icon.ico",
+      "uninstallerIcon": "assets/icon.ico",
+      "installerHeaderIcon": "assets/icon.ico",
+      "installerSidebar": "build/installerSidebar.bmp",
+      "uninstallerSidebar": "build/installerSidebar.bmp",
+      "installerHeader": "build/installerHeader.bmp"
     },
     "asarUnpack": [
       "node_modules/node-llama-cpp/**",

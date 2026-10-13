@@ -9,20 +9,9 @@ import { loadModel, transcribeAudio, isModelLoaded, getCurrentDevice, StreamingT
 import { initDiagnostics } from './diagnostics';
 import { assessLlmFit, assessSpeechFit, fitLabel, isReasoningModel, rankFor, recommendLlm, LlmFit, LlmPurpose, MemorySnapshot } from './llm-fit';
 import { renderChatMarkdown } from './chat-markdown';
-// @ts-ignore
-import micIcon from '../assets/mic.svg'
-// @ts-ignore
-import minimodeIcon from '../assets/minimode.svg'
-// @ts-ignore
-import settingsIcon from '../assets/settings.svg'
+import { icon, TITLEBAR } from './icons';
 // @ts-ignore
 import waveIcon from '../assets/wave.svg'
-// @ts-ignore
-import chatIcon from '../assets/chat.svg'
-// @ts-ignore
-import infoIcon from '../assets/information.svg'
-// @ts-ignore
-import stopIcon from '../assets/stop.svg'
 // @ts-ignore
 import startSoundFile from '../sounds/start.wav'
 // @ts-ignore
@@ -137,20 +126,20 @@ if (appElement) {
       <div class="titlebar">
         <div class="left-controls">
           <button class="win-btn island" id="win-island" title="Toggle Island Mode">
-            <img src="${minimodeIcon}" width="17" height="17" />
+            ${TITLEBAR.island}
           </button>
           <button class="version-chip" id="version-chip" type="button"></button>
         </div>
         <div class="drag-region"></div>
         <div class="window-controls">
           <button class="win-btn minimize" id="win-minimize" title="Minimize Window">
-            <svg viewBox="0 0 10 10" width="10" height="10"><path d="M0,5 L10,5" stroke="currentColor" stroke-width="1.2" vector-effect="non-scaling-stroke"/></svg>
+            ${TITLEBAR.minimize}
           </button>
           <button class="win-btn maximize" id="win-maximize" title="Maximize Window">
-            <svg viewBox="0 0 10 10" width="10" height="10"><rect x="1.5" y="1.5" width="7" height="7" fill="none" stroke="currentColor" stroke-width="1.2" vector-effect="non-scaling-stroke"/></svg>
+            ${TITLEBAR.maximize}
           </button>
           <button class="win-btn close" id="win-close" title="Close Window">
-            <svg viewBox="0 0 10 10" width="10" height="10"><path d="M1,1 L9,9 M9,1 L1,9" stroke="currentColor" stroke-width="1.2" vector-effect="non-scaling-stroke"/></svg>
+            ${TITLEBAR.close}
           </button>
         </div>
       </div>
@@ -194,7 +183,7 @@ if (appElement) {
           </div>
           <div class="controls">
              <button class="btn btn-primary" id="record-btn">
-               <span class="icon"><img src="${micIcon}" width="18" height="18" /></span>
+               <span class="icon">${icon('mic')}</span>
                <span class="text" id="record-btn-text">Click to Record</span>
                <canvas id="waveform-canvas"></canvas>
              </button>
@@ -215,12 +204,12 @@ if (appElement) {
 
         <div class="footer-bar">
           <button class="btn-icon" id="settings-btn" title="Settings">
-            <img src="${settingsIcon}" width="18" height="18" class="footer-icon" /> Settings
+            ${icon('sliders')} Settings
           </button>
           <button class="btn-chat-toggle" id="btn-open-chat" title="Chat with Open Source LLMs">
-            <img src="${chatIcon}" width="16" height="16" class="chat-toggle-icon" /> AI Chat
+            ${icon('chat')} AI Chat
           </button>
-          <button class="btn-icon" id="theme-btn" title="Toggle Theme">Theme</button>
+          <button class="btn-icon" id="theme-btn" title="Toggle Theme"><span id="theme-icon">${icon('sun')}</span> Theme</button>
         </div>
       </div>
 
@@ -229,24 +218,24 @@ if (appElement) {
         <div class="chat-topbar">
           <div class="chat-topbar-left">
             <button class="btn-chat-back" id="btn-chat-back" title="Back to Dictation">
-              <span>←</span> Dictation
+              ${icon('chevronLeft')} Dictation
             </button>
             <button class="chat-model-pill" id="btn-chat-model-picker" title="Switch or Download Open Models">
               <span class="status-indicator green" id="chat-active-model-dot"></span>
               <span id="chat-active-model-name">Loading...</span>
-              <span style="font-size: 9px; opacity: 0.6; margin-left: 2px;">▼</span>
+              <span class="pill-caret">${icon('chevronDown')}</span>
             </button>
           </div>
           <div style="display: flex; align-items: center; gap: 6px;">
             <div class="chat-hw-tag" id="chat-hw-badge" title="Hardware Profile">Checking specs...</div>
-            <button class="btn-chat-action" id="btn-chat-clear" title="Clear Conversation">Clear</button>
+            <button class="btn-chat-action" id="btn-chat-clear" title="Clear Conversation">${icon('trash')} Clear</button>
           </div>
         </div>
 
         <!-- Chat Messages Container -->
         <div class="chat-messages" id="chat-messages">
           <div class="chat-welcome" id="chat-welcome">
-            <div class="chat-welcome-icon"><img src="${chatIcon}" width="32" height="32" class="welcome-chat-icon" /></div>
+            <div class="chat-welcome-icon">${icon('chat', 32)}</div>
             <h3>WaveScribe AI Chat</h3>
             <p>Chat locally with open-source models running 100% on your device with zero cloud latency.</p>
             <div class="chat-suggestions">
@@ -262,8 +251,8 @@ if (appElement) {
           <div class="chat-input-container">
             <canvas id="chat-waveform-canvas"></canvas>
             <textarea id="chat-input-textarea" class="chat-input-textarea" rows="1" placeholder="Type or click WaveScribe to dictate prompt..."></textarea>
-            <button class="chat-btn-circle btn-chat-mic" id="btn-chat-dictate" title="Dictate prompt via voice"><img src="${waveIcon}" width="22.5" height="22.5" class="chat-wave-icon" /></button>
-            <button class="chat-btn-circle btn-chat-send" id="btn-chat-send" title="Send message (Enter)">↑</button>
+            <button class="chat-btn-circle btn-chat-mic" id="btn-chat-dictate" title="Dictate prompt via voice">${icon('wave', 18)}</button>
+            <button class="chat-btn-circle btn-chat-send" id="btn-chat-send" title="Send message (Enter)">${icon('arrowUp', 18)}</button>
           </div>
         </div>
       </div>
@@ -283,7 +272,7 @@ if (appElement) {
       <div class="modal-content settings-modal">
         <div class="modal-header">
           <h2>Settings</h2>
-          <button class="btn-close" id="settings-close">×</button>
+          <button class="btn-close" id="settings-close" title="Close">${icon('close')}</button>
         </div>
 
         <div class="modal-body">
@@ -303,30 +292,30 @@ if (appElement) {
                 <div class="seg" id="setup-cards" role="radiogroup" aria-label="Preset"></div>
               </div>
               <button class="m-row" id="row-speech" type="button">
-                <span class="m-icon"><svg viewBox="0 0 24 24"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5.5 11a6.5 6.5 0 0 0 13 0M12 17.5V21"/></svg></span>
+                <span class="m-icon">${icon('mic')}</span>
                 <span class="m-text"><span class="m-label">Voice to text</span><span class="m-value" id="speech-model-name">…</span></span>
                 <span class="m-status" id="speech-model-status"></span>
-                <span class="m-chev">›</span>
+                <span class="m-chev">${icon('chevronRight')}</span>
               </button>
               <div id="settings-model-progress" class="s-progress" style="display: none;">
                 <div class="s-progress-text"><span id="settings-model-progress-text">Downloading…</span><span id="settings-model-progress-pct">0%</span></div>
                 <div class="progress-bar-track"><div id="settings-model-progress-fill" class="progress-bar-fill" style="width: 0%;"></div></div>
               </div>
               <div class="m-row" id="row-cleanup" role="button" tabindex="0">
-                <span class="m-icon"><svg viewBox="0 0 24 24"><path d="M4 20h4L19 9l-4-4L4 16v4zM13.5 6.5l4 4"/></svg></span>
+                <span class="m-icon">${icon('pen')}</span>
                 <span class="m-text"><span class="m-label">Text cleanup</span><span class="m-value" id="cleanup-model-name">…</span></span>
                 <span class="m-status" id="cleanup-model-status"></span>
                 <label class="switch" title="Turn text cleanup on or off"><input type="checkbox" id="setting-ai-reformat"><span class="slider round"></span></label>
-                <span class="m-chev">›</span>
+                <span class="m-chev">${icon('chevronRight')}</span>
               </div>
               <div id="ai-progress-bar" class="s-progress" style="display: none;">
                 <div class="progress-bar-track"><div id="ai-progress-fill" class="progress-bar-fill" style="width: 0%;"></div></div>
               </div>
               <button class="m-row" id="row-chat" type="button">
-                <span class="m-icon"><svg viewBox="0 0 24 24"><path d="M5 5h14a1 1 0 0 1 1 1v9a1 1 0 0 1-1 1h-8l-4 3.5V16H5a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1z"/></svg></span>
+                <span class="m-icon">${icon('chat')}</span>
                 <span class="m-text"><span class="m-label">AI chat</span><span class="m-value" id="chat-model-name">…</span></span>
                 <span class="m-status" id="chat-model-status"></span>
-                <span class="m-chev">›</span>
+                <span class="m-chev">${icon('chevronRight')}</span>
               </button>
             </div>
           </section>
@@ -380,7 +369,7 @@ if (appElement) {
               </div>
               <button class="m-row m-row-plain" id="dict-manage-btn" type="button">
                 <span class="s-label">Custom words</span>
-                <span class="m-chev">›</span>
+                <span class="m-chev">${icon('chevronRight')}</span>
               </button>
             </div>
           </section>
@@ -430,7 +419,7 @@ if (appElement) {
       <div class="modal-content">
         <div class="modal-header">
           <h2>Manage Dictionary</h2>
-          <button class="btn-close" id="dictionary-close">×</button>
+          <button class="btn-close" id="dictionary-close" title="Close">${icon('close')}</button>
         </div>
         
         <div class="modal-body">
@@ -470,7 +459,7 @@ if (appElement) {
               <h2 class="picker-title" id="picker-title">Chat model</h2>
               <p class="picker-sub" id="picker-sub">Checking your PC…</p>
             </div>
-            <button class="btn-close" id="chat-models-close">×</button>
+            <button class="btn-close" id="chat-models-close" title="Close">${icon('close')}</button>
           </div>
         </div>
 
@@ -637,6 +626,12 @@ if (appElement) {
     });
   };
 
+  const syncThemeIcon = () => {
+    const el = document.getElementById('theme-icon');
+    if (el) el.innerHTML = icon(themeProvider?.classList.contains('theme-dark') ? 'moon' : 'sun');
+  };
+  syncThemeIcon();
+
   themeBtn?.addEventListener('click', () => {
     if (themeProvider?.classList.contains('theme-dark')) {
       themeProvider.classList.remove('theme-dark');
@@ -645,6 +640,7 @@ if (appElement) {
       themeProvider?.classList.remove('theme-light');
       themeProvider?.classList.add('theme-dark');
     }
+    syncThemeIcon();
   });
 
   // Window Controls
@@ -2771,7 +2767,7 @@ if (appElement) {
       }
       isGeneratingChat = false;
       btnChatSend.classList.remove('stop-mode');
-      btnChatSend.innerHTML = '↑';
+      btnChatSend.innerHTML = icon('arrowUp', 18);
       btnChatSend.title = 'Send message (Enter)';
       return;
     }
@@ -2802,7 +2798,7 @@ if (appElement) {
 
     isGeneratingChat = true;
     btnChatSend.classList.add('stop-mode');
-    btnChatSend.innerHTML = `<img src="${stopIcon}" width="14" height="14" class="chat-stop-icon" />`;
+    btnChatSend.innerHTML = icon('stop', 18);
     btnChatSend.title = 'Stop output';
     btnChatSend.disabled = false;
 
@@ -2828,7 +2824,7 @@ if (appElement) {
     } finally {
       isGeneratingChat = false;
       btnChatSend.classList.remove('stop-mode');
-      btnChatSend.innerHTML = '↑';
+      btnChatSend.innerHTML = icon('arrowUp', 18);
       btnChatSend.title = 'Send message (Enter)';
       btnChatSend.disabled = false;
       currentActiveAssistantBubbleContent = null;

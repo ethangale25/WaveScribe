@@ -273,16 +273,14 @@ body {
   border-radius: 6px;
 }
 
-.win-btn img,
-.win-btn svg {
-  /* Default: black for light theme */
-  filter: none;
-  transition: transform 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+/* Every icon comes from src/icons.ts and is drawn in the current text colour. */
+.ic {
+  display: block;
+  flex: none;
 }
 
-.theme-dark .win-btn img {
-  /* White for dark theme */
-  filter: invert(1);
+.win-btn .ic {
+  transition: transform 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
 }
 
 .win-btn:hover {
@@ -464,18 +462,6 @@ body {
   opacity: 0;
 }
 
-.btn-primary .icon img {
-  filter: invert(1);
-  /* Turns black SVG white to match button text */
-  transform: translateY(0.5px);
-  /* Slightly lower to align with text baseline */
-  display: block;
-}
-
-.theme-dark .btn-primary .icon img {
-  filter: none;
-  /* Keep black SVG for white button in dark mode */
-}
 
 /* Rounded Record Button (Pill Shape) */
 .btn {
@@ -729,16 +715,6 @@ body {
   gap: 5px;
 }
 
-.footer-icon {
-  /* Default: black for light theme */
-  filter: none;
-  transform: translateY(0.5px);
-}
-
-.theme-dark .footer-icon {
-  /* White for dark theme */
-  filter: invert(1);
-}
 
 .btn-icon:hover {
   background: var(--icon-btn-hover);
@@ -1008,13 +984,15 @@ body {
 }
 
 .btn-close {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
   background: none;
   border: none;
   color: var(--text-secondary);
-  font-size: 24px;
-  line-height: 1;
   cursor: pointer;
-  padding: 0 4px;
   transition: color 0.2s ease;
 }
 
@@ -1468,24 +1446,6 @@ body.mini-mode #island-dot {
   transform: translateY(1px);
 }
 
-.chat-toggle-icon {
-  width: 16px;
-  height: 16px;
-  display: inline-block;
-  vertical-align: middle;
-  transform: translateY(-0.5px);
-  transition: transform 0.2s ease, filter 0.2s ease;
-}
-
-.theme-dark .chat-toggle-icon {
-  /* In dark mode, btn-chat-toggle is white, so icon is dark */
-  filter: brightness(0);
-}
-
-.theme-light .chat-toggle-icon {
-  /* In light mode, btn-chat-toggle is dark, so icon is white */
-  filter: invert(1);
-}
 
 /* App View Containers */
 .app-view {
@@ -1585,14 +1545,22 @@ body.mini-mode #island-dot {
 }
 
 .btn-chat-action {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
   background: transparent;
   border: none;
   color: var(--text-secondary);
   cursor: pointer;
-  padding: 6px;
+  padding: 6px 8px;
   border-radius: 6px;
+  font-family: var(--font-family);
   font-size: 13px;
   transition: all 0.2s ease;
+}
+
+.chat-model-pill .pill-caret {
+  opacity: 0.6;
 }
 
 .btn-chat-action:hover {
@@ -1992,31 +1960,9 @@ body.mini-mode #island-dot {
   animation: pulse-border 1.5s infinite;
 }
 
-.chat-wave-icon {
-  width: 22.5px;
-  height: 22.5px;
-  display: block;
-}
-
-.theme-dark .chat-wave-icon {
-  filter: brightness(0) invert(1);
-}
-
-.theme-light .chat-wave-icon {
-  filter: brightness(0);
-}
-
-.btn-chat-mic.recording .chat-wave-icon {
-  filter: brightness(0) invert(1) !important;
-}
-
 .btn-chat-send {
   background: var(--btn-bg, #1f6feb);
   color: #ffffff;
-  font-size: 17.5px;
-  font-weight: 700;
-  line-height: 1;
-  padding-bottom: 3px;
 }
 
 .btn-chat-send:hover {
@@ -2034,12 +1980,6 @@ body.mini-mode #island-dot {
   transform: scale(1.08);
 }
 
-.chat-stop-icon {
-  width: 14px;
-  height: 14px;
-  display: block;
-  filter: brightness(0) invert(1);
-}
 
 .btn-chat-send:disabled {
   opacity: 0.4;
@@ -2267,32 +2207,8 @@ body.mini-mode #island-dot {
   color: var(--red);
 }
 
-.chat-mic-svg {
-  width: 15px;
-  height: 15px;
-  display: block;
-}
-
-.theme-dark .chat-mic-svg {
-  filter: brightness(0) invert(1);
-}
-
-.theme-light .chat-mic-svg {
-  filter: brightness(0);
-}
-
-.welcome-chat-icon {
-  width: 32px;
-  height: 32px;
-  display: block;
-}
-
-.theme-dark .welcome-chat-icon {
-  filter: brightness(0) invert(1);
-}
-
-.theme-light .welcome-chat-icon {
-  filter: brightness(0);
+.chat-welcome-icon {
+  color: var(--btn-bg);
 }
 
 /* Diagnostics Modal Styles */
@@ -2716,16 +2632,6 @@ body.mini-mode #island-dot {
   color: var(--btn-bg);
 }
 
-.m-icon svg {
-  width: 17px;
-  height: 17px;
-  fill: none;
-  stroke: currentColor;
-  stroke-width: 1.8;
-  stroke-linecap: round;
-  stroke-linejoin: round;
-}
-
 .m-text {
   display: flex;
   flex-direction: column;
@@ -2797,8 +2703,7 @@ body.mini-mode #island-dot {
 
 .m-chev {
   flex: none;
-  font-size: 18px;
-  line-height: 1;
+  display: flex;
   color: var(--text-secondary);
   opacity: 0.7;
 }

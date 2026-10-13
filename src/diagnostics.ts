@@ -1,5 +1,6 @@
 import { loadModel, transcribeAudio, disposeTranscriber } from './transcribe';
 import { startRecording, stopRecordingDirect, decodeAudioBuffer } from './audio';
+import { icon } from './icons';
 
 // Models, mirroring the Settings dropdown order/IDs.
 const MODELS: { id: string; name: string }[] = [
@@ -81,7 +82,7 @@ export function initDiagnostics(restoreModel: () => void): void {
             <h2 style="margin: 0; font-size: 16px; font-weight: 700; color: var(--text-primary);">Configuration Diagnostics</h2>
             <p style="font-size: 12px; color: var(--text-secondary); margin: 3px 0 0 0;">Test model inference accuracy and speed across hardware</p>
           </div>
-          <button class="btn-close" id="diag-close">×</button>
+          <button class="btn-close" id="diag-close" title="Close">${icon('close')}</button>
         </div>
         <div class="modal-body diag-modal-body">
           <div class="settings-section" style="margin-bottom: 20px;">

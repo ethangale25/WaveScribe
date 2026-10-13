@@ -2117,36 +2117,44 @@ if (appElement) {
   initDiagnostics(() => attemptLoadModel(currentModelId));
 
   // --- Version and updates ---
-  // The title bar shows the version. When an update exists it downloads in the background, then the
-  // chip becomes "Restart to update": one click installs silently and reopens WaveScribe.
+  // The title bar shows the version. The app checks for updates by itself; as soon as one is found the
+  // chip becomes "Update to vX". One click installs it: straight away if it has finished
+  // downloading in the background, otherwise as soon as it has (showing progress meanwhile).
   const versionChip = document.getElementById('version-chip') as HTMLButtonElement | null;
   let updateState: UpdateState | null = null;
+  let installWhenReady = false;
   let manualCheck = false;
   let chipNoteTimer: ReturnType<typeof setTimeout> | null = null;
+  let installWaitTimer: ReturnType<typeof setInterval> | null = null;
 
   const renderVersionChip = (note?: string) => {
     if (!versionChip || !updateState) return;
     const u = updateState;
-    let text = `v${u.version}`;
+    let html = escapeHtml(`v${u.version}`);
     let mode = 'quiet';
     let title = 'Check for updates';
     if (u.status === 'dev') {
-      text = `v${u.version} \u00b7 dev`;
+      html = escapeHtml(`v${u.version} \u00b7 dev`);
       title = 'Development build: updates are off';
-    } else if (u.status === 'downloading') {
-      text = `Updating ${u.percent ?? 0}%`;
-      mode = 'busy';
-      title = `Downloading version ${u.newVersion}`;
-    } else if (u.status === 'ready') {
-      text = 'Restart to update';
-      mode = 'ready';
-      title = `Version ${u.newVersion} is ready. WaveScribe restarts in a few seconds.`;
+    } else if (u.status === 'downloading' || u.status === 'ready') {
+      const target = `Update to v${u.newVersion}`;
+      if (installWhenReady) {
+        html = escapeHtml(u.status === 'ready' ? 'Restarting\u2026' : `Updating ${u.percent ?? 0}%`);
+        mode = 'busy';
+        title = `Installing version ${u.newVersion}. WaveScribe restarts by itself.`;
+      } else {
+        html = `${icon('arrowUp', 12)}<span>${escapeHtml(target)}</span>`;
+        mode = 'ready';
+        title = u.status === 'ready'
+          ? `Version ${u.newVersion} is ready. Click to restart into it (a few seconds).`
+          : `Version ${u.newVersion} is downloading. Click to install it as soon as it is ready.`;
+      }
     } else if (note) {
-      text = note;
+      html = escapeHtml(note);
     } else if (u.status === 'checking' && manualCheck) {
-      text = 'Checking\u2026';
+      html = 'Checking\u2026';
     }
-    versionChip.textContent = text;
+    versionChip.innerHTML = html;
     versionChip.className = `version-chip chip-${mode}`;
     versionChip.title = title;
   };
@@ -2157,14 +2165,26 @@ if (appElement) {
     chipNoteTimer = setTimeout(() => { chipNoteTimer = null; renderVersionChip(); }, 3000);
   };
 
+  /** Restarts into the downloaded update, waiting for any dictation in progress to finish first. */
+  const installWhenIdle = () => {
+    if (installWaitTimer || !window.electronAPI) return;
+    const tryInstall = () => {
+      if (isRecording || isProcessing) return;
+      if (installWaitTimer) { clearInterval(installWaitTimer); installWaitTimer = null; }
+      window.electronAPI.updateInstall();
+    };
+    installWaitTimer = setInterval(tryInstall, 1000);
+    tryInstall();
+  };
+
   versionChip?.addEventListener('click', async () => {
     if (!window.electronAPI || !updateState) return;
-    if (updateState.status === 'ready') {
-      // Never cut a dictation short.
-      if (isRecording || isProcessing) { showChipNote('Finish dictating first'); return; }
-      versionChip.textContent = 'Restarting\u2026';
-      await window.electronAPI.updateInstall();
-    } else if (updateState.status !== 'dev' && updateState.status !== 'downloading') {
+    const status = updateState.status;
+    if (status === 'downloading' || status === 'ready') {
+      installWhenReady = true;
+      renderVersionChip();
+      if (status === 'ready') installWhenIdle();
+    } else if (status !== 'dev') {
       manualCheck = true;
       renderVersionChip();
       await window.electronAPI.updateCheck();
@@ -2180,6 +2200,7 @@ if (appElement) {
         return;
       }
       renderVersionChip();
+      if (state.status === 'ready' && installWhenReady) installWhenIdle();
     });
     window.electronAPI.updateGetState().then((state) => { updateState = state; renderVersionChip(); }).catch(() => { });
   }

@@ -30,7 +30,7 @@ import { locateCaret, warmUpCaretLocator, stopCaretLocator, CaretRect } from './
 import { INDICATOR_HTML, INDICATOR_SIZE, IndicatorMode } from './caret-indicator'
 import { sendCtrlV, isKeyDown } from './win32'
 import { mainKeyVirtualCode } from './hotkey'
-import { initAutoUpdate } from './updater'
+import { initAutoUpdate, checkForUpdatesIfStale } from './updater'
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
@@ -400,7 +400,8 @@ app.whenReady().then(async () => {
     const appIcon = getAppIcon()
     createWindow()
     createTray(appIcon)
-    initAutoUpdate((state) => mainWindow?.webContents.send('update-state', state))
+    initAutoUpdate((state) => mainWindow?.webContents.send('update-state', state), () => mainWindow)
+    mainWindow?.on('focus', checkForUpdatesIfStale)
 
     // Auto-init LLM if enabled and model is already downloaded
     const savedLlm = store.get('llmModelId') as string | undefined

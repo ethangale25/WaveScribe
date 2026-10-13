@@ -226,6 +226,9 @@ body {
 }
 
 .version-chip.chip-ready {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
   opacity: 1;
   color: #fff;
   background: var(--btn-bg);

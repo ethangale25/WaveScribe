@@ -21,6 +21,14 @@ jobs:
       - run: npx tsc --noEmit
       - run: node scripts/copy-ort.mjs
       - run: npx vite build
+      # Create the release up front. electron-builder 26.15 uploads files in parallel and each upload
+      # tried to create the release, which left two releases for one tag (v1.0.4); into an existing
+      # release it only uploads.
+      - name: Create GitHub release
+        shell: bash
+        run: gh release create "$GITHUB_REF_NAME" --title "${GITHUB_REF_NAME#v}" --notes "" --verify-tag
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       # Publishes the installer, its blockmap and latest.yml (which the in-app updater reads).
       - run: npx electron-builder --publish always
         env:

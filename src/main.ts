@@ -1268,12 +1268,14 @@ if (appElement) {
   };
 
   let cleanupModelIdForUi = '';
+  let chatModelIdForUi = '';
 
   /** Text cleanup and AI chat rows. */
   const updateAiStatusUI = async () => {
     if (!window.electronAPI) return;
     const [s, catalog] = await Promise.all([window.electronAPI.llmStatus(), window.electronAPI.llmGetCatalog()]);
     cleanupModelIdForUi = s.activeModelId;
+    chatModelIdForUi = s.chatModelId;
 
     const cleanupModel = catalog.find(m => m.id === s.activeModelId);
     setText('cleanup-model-name', cleanupModel?.name || 'Choose a model');
@@ -1294,6 +1296,10 @@ if (appElement) {
 
   if (window.electronAPI) {
     window.electronAPI.onLlmDownloadProgress((progress: any) => {
+      if (progress?.modelId && progress.modelId === chatModelIdForUi && progress.modelId !== cleanupModelIdForUi) {
+        setRowStatus('chat-model-status', progress.percent >= 100 ? 'Ready' : `${progress.percent}%`, progress.percent >= 100 ? 'ok' : 'busy');
+        return;
+      }
       // Only the cleanup model's download belongs in the cleanup row (not a chat model's).
       if (progress?.modelId && progress.modelId !== cleanupModelIdForUi) return;
       const pct = typeof progress === 'number' ? progress : (progress?.percent ?? 0);
@@ -1305,6 +1311,8 @@ if (appElement) {
 
   // Where the voice model in use stands, kept up to date by attemptLoadModel.
   let speechLoadState: 'loading' | 'ready' | 'error' = 'loading';
+  // The voice model being downloaded right now, if any, for the picker's progress button.
+  let speechDownload: { modelId: string; percent: number } | null = null;
   let speechStatusRequest = 0;
 
   /** Voice to text row. */
@@ -1957,6 +1965,7 @@ if (appElement) {
       const pctClamped = Math.min(100, Math.max(0, percent));
       const pctStr = `${pctClamped}%`;
       setButtonProgress(modelId, pctClamped, isCompiling ? 'Loading' : undefined);
+      speechDownload = isCompiling ? null : { modelId, percent: pctClamped };
 
       if (mainProgress) mainProgress.style.display = 'block';
       if (mainProgressLabel) mainProgressLabel.textContent = message;
@@ -2009,6 +2018,7 @@ if (appElement) {
 
     const setModelReadyUI = () => {
       speechLoadState = 'ready';
+      speechDownload = null;
       if (mainProgress) mainProgress.style.display = 'none';
       if (settingsProgress) settingsProgress.style.display = 'none';
       statusDot!.className = 'status-indicator green flash';
@@ -2091,6 +2101,7 @@ if (appElement) {
     const handleLoadError = (err: any) => {
       console.error('Failed to load model', err);
       speechLoadState = 'error';
+      speechDownload = null;
       if (mainProgress) mainProgress.style.display = 'none';
       if (settingsProgress) settingsProgress.style.display = 'none';
       refreshSettingsModelStatus().catch(() => {});
@@ -2557,7 +2568,8 @@ if (appElement) {
       return {
         id, name: MODEL_DETAILS[id]?.name || id, tip: tag, fit: verdict.fit,
         gpuNote, extra: tag,
-        isDownloaded: await isHfModelDownloaded(id), downloadProgress: null,
+        isDownloaded: await isHfModelDownloaded(id),
+        downloadProgress: speechDownload?.modelId === id ? speechDownload.percent : null,
         sizeText: MODEL_DETAILS[id]?.sizeText || '', removable: false, rank,
       };
     }));

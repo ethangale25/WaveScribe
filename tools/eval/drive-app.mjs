@@ -43,6 +43,7 @@ try { fs.rmdirSync(path.join(tempProfile, 'models')); } catch { }
 if (modelFlag) {
     fs.writeFileSync(path.join(tempProfile, 'config.json'), JSON.stringify({
         model: modelFlag, computeDevice: deviceFlag, aiReformat: flag('ai') === '1', vadEnabled: true, playSounds: false, showNotify: false, pushToTalk: ptt, cpuThreads: threadsFlag,
+        hotkey: 'CommandOrControl+Shift+Space', // the shortcut this tool presses
     }));
     if (flag('ai') === '1') {
         // --ai=1 also links the real LLM models folder so the cleanup step runs.
@@ -57,6 +58,7 @@ if (modelFlag) {
     config.playSounds = false;
     config.showNotify = false;
     if (ptt) config.pushToTalk = true;
+    config.hotkey = 'CommandOrControl+Shift+Space'; // the shortcut this tool presses
     if (threadsFlag) config.cpuThreads = threadsFlag;
     fs.writeFileSync(path.join(tempProfile, 'config.json'), JSON.stringify(config));
     if (fs.existsSync(path.join(realProfile, 'models'))) {

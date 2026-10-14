@@ -10,3 +10,5 @@ venv/
 .test-build/
 tools/eval/download-test.mjs
 public/ort/
+tools/eval/smart-cleanup.mjs
+tools/eval/voice-commands.mjs

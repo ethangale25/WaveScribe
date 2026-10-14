@@ -1,10 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { stitchSegments } from '../src/stitch';
-import { isFaithfulCleanup, wordChangeRatio } from '../electron/fidelity';
+import { isFaithfulCleanup, isFaithfulSmartCleanup, wordChangeRatio } from '../electron/fidelity';
 import { findQuietestCut, countSpeechWindows, applyVAD } from '../src/dsp';
 import { PhraseSegmenter } from '../src/segmenter';
-import { assessLlmFit, recommendLlm } from '../src/llm-fit';
+import { assessLlmFit, isChatOnly, recommendLlm } from '../src/llm-fit';
+import { commandUserMessage } from '../electron/cleanup-prompts';
+import { parseModelSort, parseParamCount, sortModels, DEFAULT_MODEL_SORT } from '../src/model-sort';
 
 const seg = (text: string, forcedCut = false) => ({ text, forcedCut });
 
@@ -119,7 +121,7 @@ test('dsp: findQuietestCut lands in the silent gap', () => {
 });
 
 // --- post-processing ---
-import { removeFillers, applyDictionary, applyAutoFormatting, escapeHtml } from '../src/postprocess';
+import { removeFillers, applyDictionary, applyAutoFormatting, escapeHtml, applySpokenCommands } from '../src/postprocess';
 
 test('postprocess: removes fillers without leaving stray punctuation, keeps "like"', () => {
     assert.equal(removeFillers('So, um, we should go'), 'So, we should go');
@@ -278,4 +280,97 @@ test('llm recommend: chat gets the biggest model that runs great, never a reason
 
 test('llm recommend: cleanup sticks to the tested small model even on a big GPU', () => {
     assert.equal(recommendLlm('cleanup', LLMS, free(40, 22)), 'qwen3-4b-instruct');
+});
+
+test('llm fit: speed on the processor follows the parameters working per token', () => {
+    // Gemma 4 26B A4B: 26B in total, ~4B per token, so it answers quickly once it fits in memory.
+    const moe = { ...llm('gemma-4-26b-a4b', '26B', 15.8), activeParameters: '3.8B' };
+    assert.equal(assessLlmFit(moe, 'chat', free(32, null)).fit, 'great');
+    assert.equal(assessLlmFit(moe, 'chat', free(12, null)).fit, 'too-big');
+});
+
+test('llm recommend: newer models stay out of cleanup until they pass the cleanup eval', () => {
+    for (const id of ['qwen3.5-4b', 'qwen3.5-9b', 'gemma-4-e2b', 'gemma-4-e4b', 'gemma-4-26b-a4b', 'deepseek-r1-7b']) {
+        assert.equal(isChatOnly(id), true, id);
+    }
+    assert.equal(isChatOnly('qwen3-4b-instruct'), false);
+    const withNew = [...LLMS, llm('qwen3.5-9b', '9B', 5.3), llm('qwen3.5-4b', '4B', 2.6)];
+    assert.equal(recommendLlm('chat', withNew, free(40, 22)), 'qwen3.5-9b');
+    assert.equal(recommendLlm('cleanup', withNew, free(40, 22)), 'qwen3-4b-instruct');
+});
+
+const sortRow = (id: string, over: Partial<{ name: string; params: number; bytes: number; released: string; fit: 'great' | 'slow' | 'too-big'; rank: number }> = {}) =>
+    ({ id, name: id, params: 0, bytes: 0, released: '2024-01-01', fit: 'great' as const, rank: 0, ...over });
+const ids = (rows: { id: string }[]) => rows.map(r => r.id);
+
+test('model sort: reads parameter counts', () => {
+    assert.equal(parseParamCount('1.5B'), 1.5e9);
+    assert.equal(parseParamCount('394M'), 3.94e8);
+    assert.equal(parseParamCount(''), 0);
+});
+
+test('model sort: recommended first, then by fit, then curated rank', () => {
+    const rows = [sortRow('slow', { fit: 'slow', rank: 0 }), sortRow('b', { rank: 2 }), sortRow('rec', { rank: 5 }), sortRow('a', { rank: 1 })];
+    assert.deepEqual(ids(sortModels(rows, DEFAULT_MODEL_SORT, 'rec')), ['rec', 'a', 'b', 'slow']);
+});
+
+test('model sort: by parameters, size, release date and name in either direction', () => {
+    const rows = () => [
+        sortRow('Qwen 14B', { params: 14e9, bytes: 9, released: '2024-09-19' }),
+        sortRow('Llama 1B', { params: 1e9, bytes: 1, released: '2024-09-25' }),
+        sortRow('Qwen 7B', { params: 7e9, bytes: 5, released: '2025-01-20' }),
+    ];
+    assert.deepEqual(ids(sortModels(rows(), { key: 'params', dir: 'asc' }, null)), ['Llama 1B', 'Qwen 7B', 'Qwen 14B']);
+    assert.deepEqual(ids(sortModels(rows(), { key: 'size', dir: 'desc' }, null)), ['Qwen 14B', 'Qwen 7B', 'Llama 1B']);
+    assert.deepEqual(ids(sortModels(rows(), { key: 'released', dir: 'desc' }, null)), ['Qwen 7B', 'Llama 1B', 'Qwen 14B']);
+    // Numbers inside names sort naturally: 7B before 14B.
+    assert.deepEqual(ids(sortModels(rows(), { key: 'name', dir: 'asc' }, null)), ['Llama 1B', 'Qwen 7B', 'Qwen 14B']);
+});
+
+test('model sort: ties fall back to name', () => {
+    const rows = [sortRow('b', { params: 2 }), sortRow('a', { params: 2 })];
+    assert.deepEqual(ids(sortModels(rows, { key: 'params', dir: 'desc' }, null)), ['a', 'b']);
+});
+
+test('model sort: ignores a missing or unknown saved setting', () => {
+    assert.deepEqual(parseModelSort(undefined), DEFAULT_MODEL_SORT);
+    assert.deepEqual(parseModelSort({ key: 'bogus', dir: 'desc' }), DEFAULT_MODEL_SORT);
+    assert.deepEqual(parseModelSort({ key: 'released', dir: 'desc' }), { key: 'released', dir: 'desc' });
+});
+
+test('spoken commands: new paragraph and new line at phrase boundaries', () => {
+    assert.equal(applySpokenCommands('Dear team. New paragraph. The launch is on Friday.'), 'Dear team.\n\nThe launch is on Friday.');
+    assert.equal(applySpokenCommands('Buy milk, new line, buy eggs.'), 'Buy milk.\nBuy eggs.');
+});
+
+test('spoken commands: ordinary speech that contains the words is left alone', () => {
+    assert.equal(applySpokenCommands('We need a new line of products.'), 'We need a new line of products.');
+    assert.equal(applySpokenCommands('We should scratch that itch soon.'), 'We should scratch that itch soon.');
+});
+
+test('spoken commands: scratch that removes the sentence before it', () => {
+    assert.equal(applySpokenCommands('I will be late. Actually I am sick. Scratch that. See you at nine.'), 'I will be late. See you at nine.');
+    assert.equal(applySpokenCommands('Send it now, scratch that.'), '');
+});
+
+test('smart cleanup check: accepts dropped corrections, false starts and list formatting', () => {
+    assert.ok(isFaithfulSmartCleanup('lets meet on tuesday no wait wednesday at three', "Let's meet on Wednesday at three."));
+    assert.ok(isFaithfulSmartCleanup('send the report to john i mean to sarah by five', 'Send the report to Sarah by five.'));
+    assert.ok(isFaithfulSmartCleanup('so i i think we we should um we should ship it next week', 'I think we should ship it next week.'));
+    assert.ok(isFaithfulSmartCleanup('for the trip we need tickets a hotel and a rental car', 'For the trip we need:\n- tickets\n- a hotel\n- a rental car'));
+    assert.ok(isFaithfulSmartCleanup('the steps are one wash two rinse three dry', 'The steps are:\n1. wash\n2. rinse\n3. dry'));
+});
+
+test('smart cleanup check: rejects rewording, summaries and answers', () => {
+    const raw = 'i went to the store this morning to buy some milk and bread and then i drove home because it started to rain';
+    assert.equal(isFaithfulSmartCleanup(raw, 'I bought groceries this morning and went home when it rained.'), false);
+    assert.equal(isFaithfulSmartCleanup(raw, 'Went shopping.'), false);
+    assert.equal(isFaithfulSmartCleanup('what time does the meeting start tomorrow', 'The meeting starts at 10 a.m. tomorrow.'), false);
+    assert.equal(isFaithfulSmartCleanup('write a poem about the ocean', 'Waves roll in upon the shore, the ocean sings forevermore.'), false);
+    assert.equal(isFaithfulSmartCleanup('hello there', ''), false);
+});
+
+test('voice command: the selection is sent fenced off from the instruction, and left out when empty', () => {
+    assert.equal(commandUserMessage('make this shorter', 'Some text.'), 'Instruction: make this shorter\n\nText:\n"""\nSome text.\n"""');
+    assert.equal(commandUserMessage('write a haiku', '  '), 'Instruction: write a haiku');
 });

@@ -4,10 +4,11 @@ import { getHardwareInfo } from './hardware-info';
 import { buildSetups, recommendDevice, defaultCpuThreads, modelFamily, SpeedSample, Setup } from './setups';
 import { runSpeedTest, benchCpuThreads } from './speedtest';
 import { DEFAULT_MODEL_ID, MODEL_VRAM_MB, MODEL_DETAILS, isHfModelDownloaded } from './models';
-import { escapeHtml, removeFillers, applyDictionary, applyAutoFormatting, countWords } from './postprocess';
+import { DEFAULT_SORT_DIR, MODEL_SORT_LABELS, parseModelSort, parseParamCount, sortModels, type ModelSort, type ModelSortKey } from './model-sort';
+import { escapeHtml, removeFillers, applyDictionary, applyAutoFormatting, applySpokenCommands, countWords } from './postprocess';
 import { loadModel, transcribeAudio, isModelLoaded, getCurrentDevice, StreamingTranscriptionSession } from './transcribe';
 import { initDiagnostics } from './diagnostics';
-import { assessLlmFit, assessSpeechFit, fitLabel, isReasoningModel, rankFor, recommendLlm, LlmFit, LlmPurpose, MemorySnapshot } from './llm-fit';
+import { assessLlmFit, assessSpeechFit, fitLabel, isChatOnly, rankFor, recommendLlm, LlmFit, LlmPurpose, MemorySnapshot } from './llm-fit';
 import { renderChatMarkdown } from './chat-markdown';
 import { icon, TITLEBAR } from './icons';
 // @ts-ignore
@@ -26,7 +27,10 @@ declare global {
       getSettings: () => Promise<any>
       setSetting: (key: string, value: any) => Promise<any>
       checkHotkey: (hotkey: string) => Promise<{ registered: boolean }>
-      onDictationHotkey: (callback: (action: 'toggle' | 'start' | 'stop') => void) => () => void
+      onDictationHotkey: (callback: (action: 'toggle' | 'start' | 'stop', mode: 'dictate' | 'command') => void) => () => void
+      captureSelection: () => Promise<{ text: string }>
+      llmVoiceCommand: (instruction: string, selection: string) => Promise<{ success: boolean; text?: string; error?: string }>
+      commandHotkeyState: () => Promise<{ hotkey: string; registered: boolean }>
       windowControl: (action: 'minimize' | 'maximize' | 'close') => void
       copyText: (text: string) => Promise<{ success: boolean }>
       toggleMiniMode: (isMini: boolean) => Promise<{ success: boolean }>
@@ -65,6 +69,7 @@ declare global {
         id: string
         name: string
         parameters: string
+        released: string
         quant: string
         sizeText: string
         approxBytes: number
@@ -74,6 +79,9 @@ declare global {
         url: string
         tier: 'lightweight' | 'mid' | 'frontier'
         description: string
+        activeParameters?: string
+        retired?: boolean
+        thinking?: 'optional' | 'always'
         isDownloaded: boolean
         downloadProgress: number
         isActive: boolean
@@ -84,7 +92,7 @@ declare global {
       llmDeleteModel: (modelId: string) => Promise<{ success: boolean }>
       llmCancelDownload: () => Promise<{ success: boolean }>
       llmLoadModel: (modelId: string) => Promise<{ success: boolean; error?: string }>
-      llmReformat: (text: string, context?: string) => Promise<{ success: boolean; text: string; error?: string }>
+      llmReformat: (text: string, context?: string, style?: 'exact' | 'smart') => Promise<{ success: boolean; text: string; error?: string }>
       llmChatSend: (messages: { role: 'user' | 'assistant' | 'system'; content: string }[]) => Promise<{ success: boolean; text?: string; error?: string }>
       llmChatAbort: () => Promise<{ success: boolean }>
       llmChatClear: () => Promise<{ success: boolean }>
@@ -99,6 +107,8 @@ declare global {
       showNotification: (title: string, body: string) => Promise<{ success: boolean }>
       onLlmDownloadProgress: (callback: (progress: { modelId: string; percent: number; loadedBytes: number; totalBytes: number; phase?: 'downloading' | 'verifying' }) => void) => () => void
       onLlmChatToken: (callback: (token: string) => void) => () => void
+      onLlmChatThought: (callback: (text: string) => void) => () => void
+      llmChatSetThinking: (on: boolean) => Promise<{ success: boolean }>
     }
   }
 }
@@ -221,7 +231,7 @@ if (appElement) {
                <span class="text" id="record-btn-text">Click to Record</span>
                <canvas id="waveform-canvas"></canvas>
              </button>
-             <div class="shortcut-tip">Shortcut: <span id="hotkey-display">Ctrl + Shift + Space</span></div>
+             <div class="shortcut-tip">Shortcut: <span id="hotkey-display">Alt + W</span></div>
           </div>
           <div id="model-error-actions" style="display:none; margin-top: 10px; display: none; gap: 8px; flex-direction: row; justify-content: center;">
             <button class="btn btn-secondary btn-small" id="model-retry-btn">Retry</button>
@@ -258,6 +268,10 @@ if (appElement) {
               <span class="status-indicator green" id="chat-active-model-dot"></span>
               <span id="chat-active-model-name">Loading...</span>
               <span class="pill-caret">${icon('chevronDown')}</span>
+            </button>
+            <button class="chat-think-toggle" id="btn-chat-thinking" aria-pressed="false" style="display: none;"
+              title="Let the model reason step by step before it answers. Slower, but better on hard questions.">
+              <span class="chat-think-switch"></span> Thinking
             </button>
           </div>
           <div style="display: flex; align-items: center; gap: 6px;">
@@ -342,6 +356,13 @@ if (appElement) {
                 <label class="switch" title="Turn text cleanup on or off"><input type="checkbox" id="setting-ai-reformat"><span class="slider round"></span></label>
                 <span class="m-chev">${icon('chevronRight')}</span>
               </div>
+              <div class="s-row s-row-sub" id="row-cleanup-style">
+                <span class="s-label">Cleanup style<span class="s-hint" id="cleanup-style-hint">&nbsp;</span></span>
+                <select id="setting-cleanup-style" class="s-control">
+                  <option value="exact">Exact words</option>
+                  <option value="smart">Smart edit</option>
+                </select>
+              </div>
               <div id="ai-progress-bar" class="s-progress" style="display: none;">
                 <div class="progress-bar-track"><div id="ai-progress-fill" class="progress-bar-fill" style="width: 0%;"></div></div>
               </div>
@@ -360,6 +381,7 @@ if (appElement) {
               <div class="s-row">
                 <span class="s-label">Shortcut</span>
                 <select id="setting-hotkey-preset" class="s-control">
+                  <option value="Alt+W">Alt + W</option>
                   <option value="CommandOrControl+Shift+Space">Ctrl + Shift + Space</option>
                   <option value="Alt+Space">Alt + Space</option>
                   <option value="CommandOrControl+Alt+Space">Ctrl + Alt + Space</option>
@@ -370,11 +392,22 @@ if (appElement) {
               <div class="s-row" id="custom-hotkey-group" style="display: none;">
                 <span class="s-label">Custom<span class="s-hint" id="hotkey-help">Click Record, then press your keys</span></span>
                 <span class="s-inline">
-                  <input type="text" id="setting-hotkey" value="CommandOrControl+Shift+Space" readonly class="hotkey-input s-input">
+                  <input type="text" id="setting-hotkey" value="Alt+W" readonly class="hotkey-input s-input">
                   <button class="btn btn-secondary btn-small" id="setting-hotkey-record">Record</button>
                 </span>
               </div>
               <small id="hotkey-warning" class="s-warn" style="display: none;">That shortcut is taken by another app.</small>
+              <div class="s-row">
+                <span class="s-label">Voice command<span class="s-hint">Select text, press this and say what to change, like “make this shorter”. With nothing selected, it writes what you ask for</span></span>
+                <select id="setting-command-hotkey" class="s-control">
+                  <option value="Alt+Shift+W">Alt + Shift + W</option>
+                  <option value="CommandOrControl+Alt+Space">Ctrl + Alt + Space</option>
+                  <option value="CommandOrControl+Shift+E">Ctrl + Shift + E</option>
+                  <option value="CommandOrControl+Shift+K">Ctrl + Shift + K</option>
+                  <option value="off">Off</option>
+                </select>
+              </div>
+              <small id="command-hotkey-warning" class="s-warn" style="display: none;">That shortcut is the dictation shortcut or is taken by another app.</small>
               <div class="s-row">
                 <span class="s-label">Push to talk</span>
                 <label class="switch"><input type="checkbox" id="setting-push-to-talk"><span class="slider round"></span></label>
@@ -494,6 +527,13 @@ if (appElement) {
               <p class="picker-sub" id="picker-sub">Checking your PC…</p>
             </div>
             <button class="btn-close" id="chat-models-close" title="Close">${icon('close')}</button>
+          </div>
+          <div class="pick-sort">
+            <label for="picker-sort">Sort by</label>
+            <select id="picker-sort" class="s-control">
+              ${(Object.keys(MODEL_SORT_LABELS) as ModelSortKey[]).map(k => `<option value="${k}">${MODEL_SORT_LABELS[k]}</option>`).join('')}
+            </select>
+            <button class="btn btn-secondary btn-small" id="picker-sort-dir"></button>
           </div>
         </div>
 
@@ -854,6 +894,8 @@ if (appElement) {
   let runPendingAction: () => void = () => { };
   // True when the AI cleanup runs phrase by phrase during recording (so it is skipped at stop).
   let sessionPolishesWithLlm = false;
+  // 'command': the recording is a spoken instruction for the selected text ("make this shorter").
+  let recordingMode: 'dictate' | 'command' = 'dictate';
 
   const toggleRecording = async () => {
     // Don't record while settings modal is open
@@ -870,6 +912,12 @@ if (appElement) {
       const lap = (label: string) => console.log(`[Timing] ${label}: ${Math.round(performance.now() - tStop)}ms since stop`);
       isProcessing = true;
       isRecording = false;
+      const isCommand = recordingMode === 'command';
+      // Copy the selection now, while the user's app still has it; it is needed once the
+      // instruction has been transcribed.
+      const selectionPromise = isCommand && window.electronAPI
+        ? window.electronAPI.captureSelection().then(r => r.text).catch(() => '')
+        : Promise.resolve('');
 
       if (playSoundsEnabled) {
         const stopSound = new Audio(stopSoundFile);
@@ -960,11 +1008,31 @@ if (appElement) {
           const autoCapEnabled = settings ? (settings.autoCap !== false) : true;
           const autoPunctEnabled = settings ? (settings.autoPunct !== false) : true;
           processedText = applyAutoFormatting(processedText, autoCapEnabled, autoPunctEnabled);
+          // Smart edit: "new paragraph", "new line" and "scratch that", on the whole dictation so
+          // a command can act across phrases.
+          const smartEdit = settings?.cleanupStyle === 'smart' && !isCommand;
+          if (smartEdit) processedText = applySpokenCommands(processedText, autoCapEnabled, autoPunctEnabled);
 
           text = processedText;
 
           // AI cleanup of the whole text, only if it was not already done phrase by phrase.
-          if (settings?.aiReformat && window.electronAPI && !polishedBySession) {
+          if (isCommand && window.electronAPI && text) {
+            // Voice command: the transcribed words are the instruction, applied to the selection.
+            const instruction = text;
+            const selection = await selectionPromise;
+            lap(`selection copied (${selection.length} chars)`);
+            statusMessage!.textContent = selection ? 'Editing selection...' : 'Writing...';
+            const islandCmd = document.getElementById('island-text');
+            if (islandCmd) islandCmd.textContent = statusMessage!.textContent;
+            const result = await window.electronAPI.llmVoiceCommand(instruction, selection);
+            if (result.success && result.text) {
+              text = result.text;
+            } else {
+              text = '';
+              window.electronAPI.showNotification('Voice command', result.error || 'The voice command did not work.').catch(() => { });
+            }
+            lap('voice command done');
+          } else if (settings?.aiReformat && window.electronAPI && !polishedBySession && text) {
             const llmStatus = await window.electronAPI.llmStatus();
             if (llmStatus.status === 'ready') {
               statusMessage!.textContent = 'Reformatting...';
@@ -972,7 +1040,7 @@ if (appElement) {
               if (islandText2) islandText2.textContent = 'Reformatting...';
 
               try {
-                const result = await window.electronAPI.llmReformat(text, await capturedContextPromise);
+                const result = await window.electronAPI.llmReformat(text, await capturedContextPromise, smartEdit ? 'smart' : 'exact');
                 if (result.success && result.text) {
                   text = result.text;
                 }
@@ -987,7 +1055,7 @@ if (appElement) {
           const finalWordsCount = text.split(/\s+/).filter((w: string) => w.length > 0).length;
           const fillersRemoved = Math.max(0, originalWordsCount - finalWordsCount);
 
-          if (finalWordsCount > 0) {
+          if (finalWordsCount > 0 && !isCommand) {
             metricDictations += 1;
             metricWords += finalWordsCount;
             metricTimeSavedSec += (finalWordsCount / 0.66); // 40 wpm
@@ -1113,7 +1181,7 @@ if (appElement) {
       if (window.electronAPI) {
         try {
           const aiSettings = await window.electronAPI.getSettings();
-          if (aiSettings?.aiReformat) {
+          if (aiSettings?.aiReformat && recordingMode !== 'command') {
             capturedContextPromise = window.electronAPI.captureContext()
               .then(ctx => (ctx.success ? ctx.text : ''))
               .catch(() => '');
@@ -1127,7 +1195,9 @@ if (appElement) {
         const runSettings = window.electronAPI ? await window.electronAPI.getSettings() : null;
         const removeFillerWords = runSettings?.removeFiller !== false;
         let llmReady = false;
-        if (runSettings?.aiReformat && window.electronAPI) {
+        // Smart edit needs the whole dictation at once (a correction often spans phrases), so it
+        // runs after stop instead of phrase by phrase.
+        if (runSettings?.aiReformat && runSettings?.cleanupStyle !== 'smart' && recordingMode !== 'command' && window.electronAPI) {
           try { llmReady = (await window.electronAPI.llmStatus()).status === 'ready'; } catch { }
         }
         sessionPolishesWithLlm = llmReady;
@@ -1189,9 +1259,9 @@ if (appElement) {
         drawWaveform(performance.now());
 
         statusDot!.className = 'status-indicator red';
-        statusMessage!.textContent = 'Recording...';
+        statusMessage!.textContent = recordingMode === 'command' ? 'Say what to do...' : 'Recording...';
         if (islandDot) islandDot.className = 'status-indicator red';
-        if (islandText) islandText.textContent = 'Recording...';
+        if (islandText) islandText.textContent = recordingMode === 'command' ? 'Say what to do...' : 'Recording...';
       } catch (err) {
         console.error("Microphone failed to start:", err);
         activeStreamingSession = null;
@@ -1210,26 +1280,31 @@ if (appElement) {
 
   // A hotkey press that arrives while a dictation is starting or being processed used to be
   // dropped. Remember the latest one and run it as soon as the app is free.
-  let pendingAction: 'toggle' | 'start' | 'stop' | null = null;
+  let pendingAction: { action: 'toggle' | 'start' | 'stop'; mode: 'dictate' | 'command' } | null = null;
 
-  const handleHotkeyAction = (action: 'toggle' | 'start' | 'stop') => {
+  const handleHotkeyAction = (action: 'toggle' | 'start' | 'stop', mode: 'dictate' | 'command' = 'dictate') => {
     if (isProcessing) {
-      pendingAction = action;
+      pendingAction = { action, mode };
       return;
     }
     // Push-to-talk sends explicit start/stop; ignore ones that no longer make sense.
     if (action === 'start' && isRecording) return;
     if (action === 'stop' && !isRecording) return;
+    // Either shortcut stops a recording; the one that started it decides what it is.
+    if (!isRecording) recordingMode = mode;
     toggleRecording();
   };
 
   runPendingAction = () => {
     const next = pendingAction;
     pendingAction = null;
-    if (next) setTimeout(() => handleHotkeyAction(next), 0);
+    if (next) setTimeout(() => handleHotkeyAction(next.action, next.mode), 0);
   };
 
-  recordBtn?.addEventListener('click', toggleRecording);
+  recordBtn?.addEventListener('click', () => {
+    if (!isRecording) recordingMode = 'dictate';
+    toggleRecording();
+  });
 
   // Settings Modal Elements
   const settingsBtn = document.getElementById('settings-btn');
@@ -1257,6 +1332,19 @@ if (appElement) {
 
   // AI Reformatting UI Elements
   const inputAiReformat = document.getElementById('setting-ai-reformat') as HTMLInputElement;
+  const inputCleanupStyle = document.getElementById('setting-cleanup-style') as HTMLSelectElement | null;
+  const CLEANUP_STYLE_HINTS: Record<string, string> = {
+    exact: 'Keeps every word you say; adds punctuation',
+    smart: 'Drops self-corrections and false starts, makes lists. Say “new paragraph” or “scratch that”',
+  };
+  const showCleanupStyleHint = () => {
+    const hint = document.getElementById('cleanup-style-hint');
+    if (hint && inputCleanupStyle) hint.textContent = CLEANUP_STYLE_HINTS[inputCleanupStyle.value] ?? '';
+  };
+  inputCleanupStyle?.addEventListener('change', async () => {
+    showCleanupStyleHint();
+    await window.electronAPI?.setSetting('cleanupStyle', inputCleanupStyle.value);
+  });
   const aiProgressBar = document.getElementById('ai-progress-bar');
   const aiProgressFill = document.getElementById('ai-progress-fill');
 
@@ -1713,8 +1801,11 @@ if (appElement) {
           scoreHistory = settings.metrics.scoreHistory || [];
         }
         if (settings.aiReformat !== undefined) inputAiReformat.checked = settings.aiReformat;
+        if (inputCleanupStyle) inputCleanupStyle.value = settings.cleanupStyle === 'smart' ? 'smart' : 'exact';
       }
     }
+    showCleanupStyleHint();
+    void refreshCommandHotkey();
     updateDashboardUI();
     showSetupNote('');
     settingsModal?.classList.add('active');
@@ -1730,7 +1821,7 @@ if (appElement) {
   settingsBtn?.addEventListener('click', loadSettingsAndShow);
 
   let activeKeydownListener: ((e: KeyboardEvent) => void) | null = null;
-  let previousValidHotkey = 'CommandOrControl+Shift+Space';
+  let previousValidHotkey = 'Alt+W';
 
   const stopHotkeyRecording = (revertToPrevious = false) => {
     if (recordingHotkey) {
@@ -1776,7 +1867,7 @@ if (appElement) {
       previousValidHotkey = inputHotkey.value;
       btnHotkeyRecord.textContent = 'Listening...';
       inputHotkey.value = 'Press key combination...';
-      if (hotkeyHelp) hotkeyHelp.textContent = 'Press combination (e.g. Ctrl+Shift+Space, Alt+Space). Esc to cancel.';
+      if (hotkeyHelp) hotkeyHelp.textContent = 'Press combination (e.g. Alt+W, Ctrl+Shift+Space). Esc to cancel.';
       if (hotkeyHelp) hotkeyHelp.style.color = 'var(--text-secondary)';
 
       activeKeydownListener = (e: KeyboardEvent) => {
@@ -1867,6 +1958,24 @@ if (appElement) {
   bindSwitch(inputCap, 'autoCap');
   bindSwitch(inputPunct, 'autoPunct');
   bindSwitch(inputPushToTalk, 'pushToTalk');
+
+  const inputCommandHotkey = document.getElementById('setting-command-hotkey') as HTMLSelectElement | null;
+  const commandHotkeyWarning = document.getElementById('command-hotkey-warning');
+  const refreshCommandHotkey = async () => {
+    if (!window.electronAPI || !inputCommandHotkey) return;
+    const state = await window.electronAPI.commandHotkeyState();
+    inputCommandHotkey.value = state.hotkey;
+    if (commandHotkeyWarning) commandHotkeyWarning.style.display = state.registered ? 'none' : 'block';
+  };
+  inputCommandHotkey?.addEventListener('change', async () => {
+    const result = await window.electronAPI.setSetting('commandHotkey', inputCommandHotkey.value);
+    if (commandHotkeyWarning) commandHotkeyWarning.style.display = result?.success === false ? 'block' : 'none';
+    if (result?.success === false) {
+      // Keep showing what is actually in effect.
+      const state = await window.electronAPI.commandHotkeyState();
+      inputCommandHotkey.value = state.hotkey;
+    }
+  });
   bindSwitch(inputSounds, 'playSounds', (on) => { playSoundsEnabled = on; });
   bindSwitch(inputNotify, 'showNotify', (on) => { showNotifyEnabled = on; });
 
@@ -1889,8 +1998,8 @@ if (appElement) {
   });
 
   if (window.electronAPI) {
-    window.electronAPI.onDictationHotkey((action) => {
-      handleHotkeyAction(action);
+    window.electronAPI.onDictationHotkey((action, mode) => {
+      handleHotkeyAction(action, mode);
     });
 
     window.electronAPI.onWindowMaximized((isMax: boolean) => {
@@ -2377,6 +2486,7 @@ if (appElement) {
   const chatActiveModelDot = document.getElementById('chat-active-model-dot');
   const chatHwBadge = document.getElementById('chat-hw-badge');
   const btnChatClear = document.getElementById('btn-chat-clear');
+  const btnChatThinking = document.getElementById('btn-chat-thinking') as HTMLButtonElement | null;
   const chatMessagesContainer = document.getElementById('chat-messages');
   const chatWelcome = document.getElementById('chat-welcome');
   const chatInputTextarea = document.getElementById('chat-input-textarea') as HTMLTextAreaElement;
@@ -2408,6 +2518,10 @@ if (appElement) {
   let currentActiveAssistantBubbleContent: HTMLElement | null = null;
   let streamingReplyText = '';
   let streamingRenderPending = false;
+  // The model's reasoning for the reply being streamed, shown in a collapsible section above it.
+  let streamingThoughtEl: HTMLDetailsElement | null = null;
+  let streamingThoughtText = '';
+  let chatThinkingOn: boolean | null = null;
   let chatModelDisplayName = 'AI';
   let chatUnloadTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -2444,6 +2558,13 @@ if (appElement) {
   btnOpenChat?.addEventListener('click', switchToChatView);
   btnChatBack?.addEventListener('click', switchToDictationView);
 
+  btnChatThinking?.addEventListener('click', async () => {
+    if (isGeneratingChat) return; // switching restarts the session; wait for the reply to finish
+    chatThinkingOn = !chatThinkingOn;
+    await window.electronAPI.llmChatSetThinking(chatThinkingOn);
+    await refreshActiveChatModelUI();
+  });
+
   const refreshHardwareSpecs = async () => {
     if (!window.electronAPI || !chatHwBadge) return;
     try {
@@ -2462,6 +2583,13 @@ if (appElement) {
       const catalog = await window.electronAPI.llmGetCatalog();
       const chosen = catalog.find(m => m.id === s.chatModelId);
       chatModelDisplayName = chosen?.name || 'AI';
+
+      if (chatThinkingOn === null) chatThinkingOn = (await window.electronAPI.getSettings())?.chatThinking === true;
+      if (btnChatThinking) {
+        btnChatThinking.style.display = chosen?.thinking === 'optional' ? '' : 'none';
+        btnChatThinking.setAttribute('aria-pressed', String(chatThinkingOn));
+        btnChatThinking.classList.toggle('is-on', chatThinkingOn);
+      }
 
       if (chatActiveModelName) {
         chatActiveModelName.textContent = !chosen ? 'Choose a model'
@@ -2557,6 +2685,11 @@ if (appElement) {
     sizeText: string;
     removable: boolean;
     rank: number;
+    /** e.g. "26B parameters (3.8B active)". */
+    paramsText: string;
+    params: number;
+    bytes: number;
+    released: string;
   }
 
   const speechRows = async (mem: MemorySnapshot): Promise<{ rows: PickerRow[]; selectedId: string; recommendedId: string }> => {
@@ -2576,6 +2709,8 @@ if (appElement) {
         isDownloaded: await isHfModelDownloaded(id),
         downloadProgress: speechDownload?.modelId === id ? speechDownload.percent : null,
         sizeText: MODEL_DETAILS[id]?.sizeText || '', removable: false, rank,
+        paramsText: MODEL_DETAILS[id]?.params ? `${MODEL_DETAILS[id].params} parameters` : '', params: parseParamCount(MODEL_DETAILS[id]?.params || ''),
+        bytes: MODEL_DETAILS[id]?.approxBytes ?? 0, released: MODEL_DETAILS[id]?.released || '',
       };
     }));
     return { rows, selectedId: inputModel.value || DEFAULT_MODEL_ID, recommendedId: DEFAULT_MODEL_ID };
@@ -2583,15 +2718,17 @@ if (appElement) {
 
   const llmRows = async (purpose: LlmPurpose, mem: MemorySnapshot): Promise<{ rows: PickerRow[]; selectedId: string; recommendedId: string | null }> => {
     const [catalog, status] = await Promise.all([window.electronAPI.llmGetCatalog(), window.electronAPI.llmStatus()]);
-    const models = catalog.filter(m => purpose === 'chat' || !isReasoningModel(m.id));
+    const models = catalog.filter(m => purpose === 'chat' || !isChatOnly(m.id));
     const rows = models.map(m => {
       const f = assessLlmFit(m, purpose, mem);
       return {
-        id: m.id, name: m.name, tip: m.description, fit: f.fit, extra: null,
+        id: m.id, name: m.name, tip: m.description, fit: f.fit,
+        extra: purpose !== 'chat' ? null : m.thinking === 'optional' ? 'Can think before answering' : m.thinking === 'always' ? 'Always thinks first' : null,
         gpuNote: f.fitsOnGpu === null ? null : f.fitsOnGpu ? { text: 'Fits in graphics memory', ok: true } : { text: 'Not enough graphics memory', ok: false },
         isDownloaded: m.isDownloaded,
         downloadProgress: status.activeDownloadModelId === m.id ? m.downloadProgress : null,
         sizeText: m.sizeText.replace('~', ''), removable: m.isDownloaded, rank: rankFor(purpose, m.id),
+        paramsText: `${m.parameters} parameters${m.activeParameters ? ` (${m.activeParameters} active)` : ''}`, params: parseParamCount(m.parameters), bytes: m.approxBytes, released: m.released,
       };
     });
     return {
@@ -2600,6 +2737,53 @@ if (appElement) {
       recommendedId: recommendLlm(purpose, models, mem),
     };
   };
+
+  // How the user likes the picker sorted, shared by all three pickers and kept between runs.
+  let modelSort: ModelSort | null = null;
+  const getModelSort = async (): Promise<ModelSort> => {
+    if (!modelSort) {
+      const settings = await window.electronAPI.getSettings().catch(() => null);
+      modelSort = parseModelSort(settings?.modelSort);
+    }
+    return modelSort;
+  };
+  const setModelSort = async (sort: ModelSort) => {
+    modelSort = sort;
+    renderSortControls(sort);
+    await renderModelPicker();
+    await window.electronAPI.setSetting('modelSort', sort);
+  };
+
+  const pickerSortSelect = document.getElementById('picker-sort') as HTMLSelectElement | null;
+  const pickerSortDir = document.getElementById('picker-sort-dir') as HTMLButtonElement | null;
+  const SORT_DIR_TEXT: Record<ModelSortKey, [string, string]> = {
+    recommended: ['', ''],
+    name: ['A to Z', 'Z to A'],
+    params: ['Smallest first', 'Largest first'],
+    size: ['Smallest first', 'Largest first'],
+    released: ['Oldest first', 'Newest first'],
+  };
+  const renderSortControls = (sort: ModelSort) => {
+    if (pickerSortSelect) pickerSortSelect.value = sort.key;
+    if (pickerSortDir) {
+      // The recommended order has no meaningful reverse.
+      pickerSortDir.style.display = sort.key === 'recommended' ? 'none' : '';
+      pickerSortDir.textContent = SORT_DIR_TEXT[sort.key][sort.dir === 'asc' ? 0 : 1];
+      pickerSortDir.title = 'Reverse the order';
+    }
+  };
+  pickerSortSelect?.addEventListener('change', () => {
+    const key = pickerSortSelect.value as ModelSortKey;
+    void setModelSort({ key, dir: DEFAULT_SORT_DIR[key] });
+  });
+  pickerSortDir?.addEventListener('click', async () => {
+    const sort = await getModelSort();
+    void setModelSort({ key: sort.key, dir: sort.dir === 'asc' ? 'desc' : 'asc' });
+  });
+
+  /** "2024-09-25" -> "Sep 2024". */
+  const formatReleased = (iso: string) =>
+    new Date(`${iso}T00:00:00`).toLocaleDateString(undefined, { month: 'short', year: 'numeric' });
 
   const PICKER_TITLES: Record<PickerPurpose, string> = { speech: 'Voice to text', cleanup: 'Text cleanup', chat: 'AI chat' };
 
@@ -2614,17 +2798,20 @@ if (appElement) {
       if (pickerTitle) pickerTitle.textContent = PICKER_TITLES[purpose];
       if (pickerSub) pickerSub.textContent = describeFreeMemory(mem);
 
-      const fitOrder = { great: 0, slow: 1, 'too-big': 2 };
-      rows.sort((a, b) =>
-        Number(b.id === recommendedId) - Number(a.id === recommendedId)
-        || fitOrder[a.fit] - fitOrder[b.fit]
-        || a.rank - b.rank);
+      const sort = await getModelSort();
+      sortModels(rows, sort, recommendedId);
+      renderSortControls(sort);
 
       const anyDownload = !!status.activeDownloadModelId;
       const rowHtml = (r: PickerRow) => {
         const isSelected = r.id === selectedId;
         const gpuFact = r.gpuNote ? `<span class="pick-fact ${r.gpuNote.ok ? 'gpu-yes' : 'gpu-no'}">${r.gpuNote.text}</span>` : '';
         const label = purpose === 'speech' && r.fit === 'slow' ? 'Slow on this PC' : fitLabel(r.fit);
+        // Whatever the list is sorted by is shown on every row, so the order makes sense at a glance.
+        const sortFact = sort.key === 'params' ? r.paramsText
+          : sort.key === 'released' && r.released ? `Released ${formatReleased(r.released)}`
+          : sort.key === 'size' && r.isDownloaded ? `${r.sizeText} download`
+          : '';
 
         let action: string;
         if (isSelected && r.isDownloaded) action = '<span class="badge badge-on">In use</span>';
@@ -2641,6 +2828,7 @@ if (appElement) {
               <div class="pick-facts">
                 <span class="pick-fact fit-${r.fit}"><span class="pick-dot"></span>${label}</span>
                 ${gpuFact}
+                ${sortFact ? `<span class="pick-fact">${escapeHtml(sortFact)}</span>` : ''}
                 ${r.extra ? `<span class="pick-fact">${escapeHtml(r.extra)}</span>` : ''}
                 ${r.isDownloaded ? (remove ? `<span class="pick-fact">${remove}</span>` : '') : `<span class="pick-fact">${escapeHtml(r.sizeText)}</span>`}
               </div>
@@ -2746,11 +2934,27 @@ if (appElement) {
       window.electronAPI.llmCancelDownload();
     });
 
+    window.electronAPI.onLlmChatThought((text: string) => {
+      if (!currentActiveAssistantBubbleContent) return;
+      if (!streamingThoughtEl) {
+        streamingThoughtEl = document.createElement('details');
+        streamingThoughtEl.className = 'chat-thought';
+        streamingThoughtEl.open = true;
+        streamingThoughtEl.innerHTML = '<summary>Thinking…</summary><div class="chat-thought-body"></div>';
+        currentActiveAssistantBubbleContent.before(streamingThoughtEl);
+      }
+      streamingThoughtText += text;
+      const body = streamingThoughtEl.querySelector('.chat-thought-body');
+      if (body) body.textContent = streamingThoughtText;
+      if (chatMessagesContainer) chatMessagesContainer.scrollTop = chatMessagesContainer.scrollHeight;
+    });
+
     // Real-time Chat Token Streaming listener
     // Tokens arrive faster than the screen refreshes; render the Markdown at most once per frame.
     window.electronAPI.onLlmChatToken((token: string) => {
       if (!currentActiveAssistantBubbleContent) return;
       streamingReplyText += token;
+      endThoughtSection();
       if (streamingRenderPending) return;
       streamingRenderPending = true;
       requestAnimationFrame(() => {
@@ -2763,6 +2967,15 @@ if (appElement) {
       });
     });
   }
+
+  /** The answer has started (or the reply ended): fold the reasoning away under a short label. */
+  const endThoughtSection = () => {
+    if (!streamingThoughtEl || streamingThoughtEl.dataset.done) return;
+    streamingThoughtEl.dataset.done = '1';
+    streamingThoughtEl.open = false;
+    const summary = streamingThoughtEl.querySelector('summary');
+    if (summary) summary.textContent = 'Thought process';
+  };
 
   // Format and append chat messages
   const appendChatMessage = (role: 'user' | 'assistant', content: string) => {
@@ -2874,6 +3087,8 @@ if (appElement) {
 
     // Append placeholder Assistant Message
     streamingReplyText = '';
+    streamingThoughtText = '';
+    streamingThoughtEl = null;
     const assistantBubble = appendChatMessage('assistant', '');
     void refreshActiveChatModelUI();
 
@@ -2897,6 +3112,8 @@ if (appElement) {
       btnChatSend.innerHTML = icon('arrowUp', 20);
       btnChatSend.title = 'Send message (Enter)';
       btnChatSend.disabled = false;
+      endThoughtSection();
+      streamingThoughtEl = null;
       currentActiveAssistantBubbleContent = null;
       void refreshActiveChatModelUI();
     }

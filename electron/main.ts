@@ -14,12 +14,16 @@ import {
     getLlmStatus,
     getModelCatalog,
     chatStream,
+    runVoiceCommand,
     clearChat,
     abortChat,
     isModelDownloaded,
     setPreferredModel,
+    currentModelId,
+    migrateRenamedModelFiles,
     cancelDownload,
     setChatModel,
+    setChatThinking,
     loadChatModel,
     unloadChatModel,
     getCleanupModelId,
@@ -29,6 +33,7 @@ import { captureContext } from './context-capture'
 import { locateCaret, warmUpCaretLocator, stopCaretLocator, CaretRect } from './caret'
 import { INDICATOR_HTML, INDICATOR_SIZE, IndicatorMode } from './caret-indicator'
 import { sendCtrlV, isKeyDown } from './win32'
+import { captureSelection, snapshotClipboard, waitForModifiersReleased } from './selection'
 import { mainKeyVirtualCode } from './hotkey'
 import { initAutoUpdate, checkForUpdatesIfStale } from './updater'
 
@@ -202,49 +207,73 @@ function createTray(icon: Electron.NativeImage) {
 
 // --- Global hotkey: toggle mode, or push-to-talk (hold to dictate) ---
 
+// Two shortcuts: dictation, and voice commands that act on the selected text ("make this shorter").
+type HotkeyMode = 'dictate' | 'command'
+// Alt-based so no app's everyday shortcut is taken over (Ctrl+W closes tabs and documents).
+const DEFAULT_HOTKEY = 'Alt+W'
+const DEFAULT_COMMAND_HOTKEY = 'Alt+Shift+W'
+
 let activeHotkey = ''
+let activeCommandHotkey = ''
 let holdActive = false
 let holdTimer: ReturnType<typeof setInterval> | null = null
 
-function sendDictationAction(action: 'toggle' | 'start' | 'stop') {
-    console.log(`[Hotkey] ${action} @ ${Date.now()}`)
-    mainWindow?.webContents.send('dictation-hotkey', action)
+function sendDictationAction(action: 'toggle' | 'start' | 'stop', mode: HotkeyMode = 'dictate') {
+    console.log(`[Hotkey] ${mode} ${action} @ ${Date.now()}`)
+    mainWindow?.webContents.send('dictation-hotkey', action, mode)
 }
 
-function onHotkeyPressed() {
+function onHotkeyPressed(accelerator: string, mode: HotkeyMode) {
     const pushToTalk = store.get('pushToTalk', false) as boolean
-    const vk = pushToTalk ? mainKeyVirtualCode(activeHotkey) : null
+    const vk = pushToTalk ? mainKeyVirtualCode(accelerator) : null
 
     // Push-to-talk needs a key we can poll for release; anything else behaves as a toggle.
     if (!pushToTalk || vk === null || isKeyDown(vk) === null) {
-        sendDictationAction('toggle')
+        sendDictationAction('toggle', mode)
         return
     }
 
     // Holding the keys makes the OS repeat the hotkey; only the first press starts recording.
     if (holdActive) return
     holdActive = true
-    sendDictationAction('start')
+    sendDictationAction('start', mode)
     holdTimer = setInterval(() => {
         if (isKeyDown(vk) === false) {
             if (holdTimer) clearInterval(holdTimer)
             holdTimer = null
             holdActive = false
-            sendDictationAction('stop')
+            sendDictationAction('stop', mode)
         }
     }, 25)
 }
 
-/** Registers the dictation hotkey. Returns false if the OS refused it (e.g. another app owns it). */
-function registerDictationHotkey(accelerator: string): boolean {
+function registerHotkey(accelerator: string, mode: HotkeyMode): boolean {
     try {
-        const ok = globalShortcut.register(accelerator, onHotkeyPressed)
-        if (ok) activeHotkey = accelerator
-        return ok
+        return globalShortcut.register(accelerator, () => onHotkeyPressed(accelerator, mode))
     } catch (e) {
         console.warn('Failed to register hotkey:', accelerator, e)
         return false
     }
+}
+
+/** Registers the dictation hotkey. Returns false if the OS refused it (e.g. another app owns it). */
+function registerDictationHotkey(accelerator: string): boolean {
+    const ok = registerHotkey(accelerator, 'dictate')
+    if (ok) activeHotkey = accelerator
+    return ok
+}
+
+/** Registers the voice-command hotkey ('off' disables it). False if it could not be registered. */
+function registerCommandHotkey(accelerator: string): boolean {
+    if (activeCommandHotkey) {
+        try { globalShortcut.unregister(activeCommandHotkey) } catch { }
+        activeCommandHotkey = ''
+    }
+    if (!accelerator || accelerator === 'off') return true
+    if (accelerator === activeHotkey) return false // already the dictation shortcut
+    const ok = registerHotkey(accelerator, 'command')
+    if (ok) activeCommandHotkey = accelerator
+    return ok
 }
 
 // Test mode: automated runs set WAVESCRIBE_TEST_DISPLAY_POINT (physical pixel "x,y") to a point on the
@@ -336,7 +365,7 @@ function createWindow() {
     });
 
     // Global hotkey
-    const hotkey = store.get('hotkey', 'CommandOrControl+Shift+Space') as string
+    const hotkey = store.get('hotkey', DEFAULT_HOTKEY) as string
     if (!registerDictationHotkey(hotkey)) {
         // Without this the app would say "Ready" while the hotkey silently did nothing.
         if (!testDisplay) try {
@@ -345,6 +374,10 @@ function createWindow() {
                 body: `Could not register "${hotkey}". Another app may be using it. Choose a different shortcut in Settings.`
             }).show()
         } catch (_) { }
+    }
+    // A taken voice-command shortcut is reported in Settings; dictation still works without it.
+    if (!registerCommandHotkey(store.get('commandHotkey', DEFAULT_COMMAND_HOTKEY) as string)) {
+        console.warn('[Hotkey] Voice-command shortcut unavailable')
     }
 
     // The caret indicator window (hidden until a dictation is being transcribed)
@@ -404,11 +437,17 @@ app.whenReady().then(async () => {
     mainWindow?.on('focus', checkForUpdatesIfStale)
 
     // Auto-init LLM if enabled and model is already downloaded
+    migrateRenamedModelFiles()
+    for (const key of ['llmModelId', 'chatModelId']) {
+        const saved = store.get(key) as string | undefined
+        if (saved && currentModelId(saved) !== saved) store.set(key, currentModelId(saved))
+    }
     const savedLlm = store.get('llmModelId') as string | undefined
     if (savedLlm) setPreferredModel(savedLlm)
     // Before chat had its own model, the chat picker set llmModelId; carry that choice over.
     const savedChat = (store.get('chatModelId') as string | undefined) ?? savedLlm
     if (savedChat) setChatModel(savedChat)
+    setChatThinking(store.get('chatThinking', false) === true)
     const aiEnabled = store.get('aiReformat', false)
     if (aiEnabled && isModelDownloaded(getCleanupModelId())) {
         try {
@@ -473,27 +512,6 @@ public class Kbd {
     });
 }
 
-/**
- * Copies everything on the clipboard (text, HTML, RTF, images, files...) into standalone items, so
- * it can be put back after a paste. Formats that cannot be read are skipped rather than failing.
- */
-async function snapshotClipboard(): Promise<ClipboardItem[]> {
-    try {
-        const items = await clipboard.read();
-        const copies = await Promise.all(items.map(async (item) => {
-            const entries = await Promise.all(item.types.map(async (type) => {
-                try { return [type, await item.getType(type)] as const; } catch { return null; }
-            }));
-            const readable = entries.filter((e): e is NonNullable<typeof e> => e !== null);
-            return readable.length ? new ClipboardItem(Object.fromEntries(readable)) : null;
-        }));
-        return copies.filter((c): c is ClipboardItem => c !== null);
-    } catch (err) {
-        console.warn('[InsertText] Could not read the clipboard:', err);
-        return [];
-    }
-}
-
 // IPC commands for text injection: set clipboard, send Ctrl+V, restore clipboard.
 ipcMain.handle('insert-text', async (event, text: string) => {
     // Debug/test switch: report success without touching the clipboard or the focused app.
@@ -505,6 +523,9 @@ ipcMain.handle('insert-text', async (event, text: string) => {
         const previous = await snapshotClipboard();
         await clipboard.writeText(text);
 
+        // A shortcut key still held would turn Ctrl+V into another shortcut. Returns at once when
+        // nothing is held, which is almost always by the time the text is ready.
+        await waitForModifiersReleased();
         // Native SendInput takes ~1ms; PowerShell (cold start + C# compile) takes hundreds.
         const success = sendCtrlV() || await sendCtrlVViaPowerShell();
 
@@ -534,7 +555,7 @@ ipcMain.handle('get-settings', () => {
 ipcMain.handle('set-setting', (event, key, value) => {
     // Dynamically update hotkey tracking with safe rollback
     if (key === 'hotkey') {
-        const previousHotkey = activeHotkey || (store.get('hotkey', 'CommandOrControl+Shift+Space') as string);
+        const previousHotkey = activeHotkey || (store.get('hotkey', DEFAULT_HOTKEY) as string);
         if (holdTimer) { clearInterval(holdTimer); holdTimer = null; holdActive = false; }
         globalShortcut.unregisterAll();
 
@@ -542,15 +563,56 @@ ipcMain.handle('set-setting', (event, key, value) => {
             // Roll back to the previous hotkey so the user is not locked out
             console.warn(`[Hotkey] Failed to register "${value}". Reverting to "${previousHotkey}".`);
             registerDictationHotkey(previousHotkey);
+            reregisterCommandHotkey();
             return { success: false };
         }
+        reregisterCommandHotkey();
 
+        store.set(key, value);
+        return { success: true };
+    }
+
+    if (key === 'commandHotkey') {
+        const previous = store.get('commandHotkey', DEFAULT_COMMAND_HOTKEY) as string;
+        if (!registerCommandHotkey(value)) {
+            registerCommandHotkey(previous);
+            return { success: false };
+        }
         store.set(key, value);
         return { success: true };
     }
 
     store.set(key, value);
     return { success: true };
+});
+
+/** unregisterAll() also drops the command shortcut; put it back. */
+function reregisterCommandHotkey() {
+    activeCommandHotkey = '';
+    registerCommandHotkey(store.get('commandHotkey', DEFAULT_COMMAND_HOTKEY) as string);
+}
+
+ipcMain.handle('command-hotkey-state', () => {
+    const wanted = store.get('commandHotkey', DEFAULT_COMMAND_HOTKEY) as string;
+    return { hotkey: wanted, registered: wanted === 'off' || activeCommandHotkey === wanted };
+});
+
+ipcMain.handle('capture-selection', async () => {
+    if (process.env.WAVESCRIBE_NO_PASTE) return { text: '' };
+    try {
+        return { text: await captureSelection() };
+    } catch (err) {
+        console.warn('[Selection] Could not read the selection:', err);
+        return { text: '' };
+    }
+});
+
+ipcMain.handle('llm-voice-command', async (_event: any, instruction: string, selection: string) => {
+    try {
+        return { success: true, text: await runVoiceCommand(instruction, selection) };
+    } catch (err: any) {
+        return { success: false, error: err?.message || String(err) };
+    }
 });
 
 ipcMain.handle('check-hotkey', (event, hotkey) => {
@@ -761,9 +823,9 @@ ipcMain.handle('llm-status', () => {
     return getLlmStatus();
 });
 
-ipcMain.handle('llm-reformat', async (_event: any, text: string, context?: string) => {
+ipcMain.handle('llm-reformat', async (_event: any, text: string, context?: string, style?: 'exact' | 'smart') => {
     try {
-        const result = await reformatText(text, context);
+        const result = await reformatText(text, context, style === 'smart' ? 'smart' : 'exact');
         return { success: true, text: result };
     } catch (err: any) {
         return { success: false, text: text, error: err.message };
@@ -780,7 +842,10 @@ ipcMain.handle('llm-chat-send', async (_event: any, { messages }: { messages: { 
             (token: string) => {
                 mainWindow?.webContents.send('llm-chat-token', token);
             },
-            activeChatAbortSignal
+            activeChatAbortSignal,
+            (thought: string) => {
+                mainWindow?.webContents.send('llm-chat-thought', thought);
+            }
         );
         return { success: true, text: fullResponse };
     } catch (err: any) {
@@ -796,6 +861,12 @@ ipcMain.handle('llm-chat-abort', () => {
 
 ipcMain.handle('llm-chat-clear', () => {
     clearChat();
+    return { success: true };
+});
+
+ipcMain.handle('llm-chat-set-thinking', (_event, on: boolean) => {
+    setChatThinking(on === true);
+    store.set('chatThinking', on === true);
     return { success: true };
 });
 

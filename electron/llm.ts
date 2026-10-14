@@ -6,12 +6,15 @@ import http from 'http'
 import crypto from 'crypto'
 import { app } from 'electron'
 import { detectHardware, HardwareProfile } from './hardware'
-import { isFaithfulCleanup, stripAddedQuotes } from './fidelity'
+import { isFaithfulCleanup, isFaithfulSmartCleanup, stripAddedQuotes } from './fidelity'
+import { CleanupStyle, COMMAND_EDIT_PROMPT, COMMAND_WRITE_PROMPT, EXACT_PROMPT, SMART_PROMPT, commandUserMessage } from './cleanup-prompts'
 
 export interface ModelMetadata {
     id: string
     name: string
     parameters: string
+    /** When the model was first published (ISO date), for sorting the picker. */
+    released: string
     quant: string
     sizeText: string
     approxBytes: number
@@ -21,6 +24,12 @@ export interface ModelMetadata {
     url: string
     tier: 'lightweight' | 'mid' | 'frontier'
     description: string
+    /** Parameters doing the work per token when fewer than the total (mixture-of-experts, Gemma 4 "E" sizes). */
+    activeParameters?: string
+    /** No longer offered; listed only while still downloaded so it keeps working and can be removed. */
+    retired?: boolean
+    /** 'optional': can reason step by step before answering, switchable in chat. 'always': cannot be switched off. */
+    thinking?: 'optional' | 'always'
 }
 
 export const OPEN_MODELS: ModelMetadata[] = [
@@ -28,6 +37,7 @@ export const OPEN_MODELS: ModelMetadata[] = [
         id: 'llama-3.2-1b',
         name: 'Llama 3.2 1B Instruct',
         parameters: '1B',
+        released: '2024-09-25',
         quant: 'Q4_K_M',
         sizeText: '~800 MB',
         approxBytes: 800 * 1024 * 1024,
@@ -36,12 +46,13 @@ export const OPEN_MODELS: ModelMetadata[] = [
         filename: 'Llama-3.2-1B-Instruct-Q4_K_M.gguf',
         url: 'https://huggingface.co/bartowski/Llama-3.2-1B-Instruct-GGUF/resolve/main/Llama-3.2-1B-Instruct-Q4_K_M.gguf',
         tier: 'lightweight',
-        description: 'Meta’s newest ultra-fast lightweight model. Lightning quick on all PCs.'
+        description: 'Meta’s 1B model from 2024. Very quick on any PC.'
     },
     {
         id: 'qwen-2.5-1.5b',
         name: 'Qwen 2.5 1.5B Instruct',
         parameters: '1.5B',
+        released: '2024-09-19',
         quant: 'Q4_K_M',
         sizeText: '~986 MB',
         approxBytes: 986 * 1024 * 1024,
@@ -56,6 +67,7 @@ export const OPEN_MODELS: ModelMetadata[] = [
         id: 'qwen3-4b-instruct',
         name: 'Qwen3 4B Instruct',
         parameters: '4B',
+        released: '2025-08-06',
         quant: 'Q4_K_M',
         sizeText: '~2.4 GB',
         approxBytes: 2380 * 1024 * 1024,
@@ -70,6 +82,7 @@ export const OPEN_MODELS: ModelMetadata[] = [
         id: 'deepseek-r1-1.5b',
         name: 'DeepSeek R1 Distill Qwen 1.5B',
         parameters: '1.5B',
+        released: '2025-01-20',
         quant: 'Q4_K_M',
         sizeText: '~1.1 GB',
         approxBytes: 1100 * 1024 * 1024,
@@ -78,12 +91,15 @@ export const OPEN_MODELS: ModelMetadata[] = [
         filename: 'DeepSeek-R1-Distill-Qwen-1.5B-Q4_K_M.gguf',
         url: 'https://huggingface.co/bartowski/DeepSeek-R1-Distill-Qwen-1.5B-GGUF/resolve/main/DeepSeek-R1-Distill-Qwen-1.5B-Q4_K_M.gguf',
         tier: 'lightweight',
-        description: 'DeepSeek’s breakthrough chain-of-thought reasoning distilled into 1.5B.'
+        description: 'DeepSeek’s breakthrough chain-of-thought reasoning distilled into 1.5B.',
+        retired: true,
+        thinking: 'always'
     },
     {
         id: 'llama-3.2-3b',
         name: 'Llama 3.2 3B Instruct',
         parameters: '3B',
+        released: '2024-09-25',
         quant: 'Q4_K_M',
         sizeText: '~2.0 GB',
         approxBytes: 2000 * 1024 * 1024,
@@ -98,6 +114,7 @@ export const OPEN_MODELS: ModelMetadata[] = [
         id: 'phi-4-mini',
         name: 'Phi-4 Mini 3.8B Instruct',
         parameters: '3.8B',
+        released: '2025-02-26',
         quant: 'Q4_K_M',
         sizeText: '~2.5 GB',
         approxBytes: 2500 * 1024 * 1024,
@@ -109,29 +126,31 @@ export const OPEN_MODELS: ModelMetadata[] = [
         description: 'Microsoft’s high-density reasoning, math, and logic model.'
     },
     {
-        id: 'gemma-4-e2b',
+        id: 'gemma-2-2b',
         name: 'Gemma 2 2B Instruct',
         parameters: '2B',
+        released: '2024-07-31',
         quant: 'Q4_K_M',
         sizeText: '~1.5 GB',
         approxBytes: 1500 * 1024 * 1024,
         ramNeededText: '~2.2 GB RAM',
         minTotalRamGb: 4,
-        filename: 'gemma-4-e2b-it-Q4_K_M.gguf',
+        filename: 'gemma-2-2b-it-Q4_K_M.gguf',
         url: 'https://huggingface.co/bartowski/gemma-2-2b-it-GGUF/resolve/main/gemma-2-2b-it-Q4_K_M.gguf',
         tier: 'lightweight',
         description: 'Google’s efficient 2B Gemma 2 model for rapid local inference on any PC.'
     },
     {
-        id: 'gemma-4-e4b',
-        name: 'Gemma 2 2B Instruct (High Quality)',
+        id: 'gemma-2-2b-q8',
+        name: 'Gemma 2 2B Instruct (8-bit)',
         parameters: '2B',
+        released: '2024-07-31',
         quant: 'Q8_0',
         sizeText: '~2.8 GB',
         approxBytes: 2780 * 1024 * 1024,
         ramNeededText: '~3.6 GB RAM',
         minTotalRamGb: 8,
-        filename: 'gemma-4-e4b-it-Q4_K_M.gguf',
+        filename: 'gemma-2-2b-it-Q8_0.gguf',
         url: 'https://huggingface.co/bartowski/gemma-2-2b-it-GGUF/resolve/main/gemma-2-2b-it-Q8_0.gguf',
         tier: 'lightweight',
         description: 'The same Gemma 2 2B at 8-bit precision: closer to full quality, with a larger footprint.'
@@ -140,6 +159,7 @@ export const OPEN_MODELS: ModelMetadata[] = [
         id: 'gemma-2-9b',
         name: 'Gemma 2 9B Instruct',
         parameters: '9B',
+        released: '2024-06-27',
         quant: 'Q4_K_M',
         sizeText: '~5.8 GB',
         approxBytes: 5800 * 1024 * 1024,
@@ -151,15 +171,16 @@ export const OPEN_MODELS: ModelMetadata[] = [
         description: 'Google’s high-performing 9B architecture with exceptional general knowledge and instruction following.'
     },
     {
-        id: 'gemma-4-12b',
-        name: 'Gemma 2 9B Instruct (High Quality)',
+        id: 'gemma-2-9b-q6',
+        name: 'Gemma 2 9B Instruct (6-bit)',
         parameters: '9B',
+        released: '2024-06-27',
         quant: 'Q6_K',
         sizeText: '~7.6 GB',
         approxBytes: 7600 * 1024 * 1024,
         ramNeededText: '~8.8 GB RAM',
         minTotalRamGb: 15,
-        filename: 'gemma-4-12b-it-Q4_K_M.gguf',
+        filename: 'gemma-2-9b-it-Q6_K.gguf',
         url: 'https://huggingface.co/bartowski/gemma-2-9b-it-GGUF/resolve/main/gemma-2-9b-it-Q6_K.gguf',
         tier: 'frontier',
         description: 'Gemma 2 9B at 6-bit precision for the best quality this family offers on a 16 GB PC.'
@@ -168,6 +189,7 @@ export const OPEN_MODELS: ModelMetadata[] = [
         id: 'qwen-2.5-7b',
         name: 'Qwen 2.5 7B Instruct',
         parameters: '7B',
+        released: '2024-09-19',
         quant: 'Q4_K_M',
         sizeText: '~4.7 GB',
         approxBytes: 4700 * 1024 * 1024,
@@ -176,12 +198,13 @@ export const OPEN_MODELS: ModelMetadata[] = [
         filename: 'qwen2.5-7b-instruct-q4_k_m.gguf',
         url: 'https://huggingface.co/Qwen/Qwen2.5-7B-Instruct-GGUF/resolve/main/qwen2.5-7b-instruct-q4_k_m.gguf',
         tier: 'mid',
-        description: 'State-of-the-art 7B benchmark leader. Exceptional coding & reasoning.'
+        description: 'Alibaba’s 7B model. Strong at coding and reasoning for its size.'
     },
     {
         id: 'llama-3.1-8b',
         name: 'Llama 3.1 8B Instruct',
         parameters: '8B',
+        released: '2024-07-23',
         quant: 'Q4_K_M',
         sizeText: '~4.9 GB',
         approxBytes: 4900 * 1024 * 1024,
@@ -196,6 +219,7 @@ export const OPEN_MODELS: ModelMetadata[] = [
         id: 'deepseek-r1-7b',
         name: 'DeepSeek R1 Distill Qwen 7B',
         parameters: '7B',
+        released: '2025-01-20',
         quant: 'Q4_K_M',
         sizeText: '~4.7 GB',
         approxBytes: 4700 * 1024 * 1024,
@@ -204,12 +228,15 @@ export const OPEN_MODELS: ModelMetadata[] = [
         filename: 'DeepSeek-R1-Distill-Qwen-7B-Q4_K_M.gguf',
         url: 'https://huggingface.co/bartowski/DeepSeek-R1-Distill-Qwen-7B-GGUF/resolve/main/DeepSeek-R1-Distill-Qwen-7B-Q4_K_M.gguf',
         tier: 'mid',
-        description: 'DeepSeek R1 reasoning distilled into Qwen 7B architecture.'
+        description: 'DeepSeek R1 reasoning distilled into Qwen 7B architecture.',
+        retired: true,
+        thinking: 'always'
     },
     {
         id: 'qwen-2.5-14b',
         name: 'Qwen 2.5 14B Instruct',
         parameters: '14B',
+        released: '2024-09-19',
         quant: 'Q4_K_M',
         sizeText: '~9.0 GB',
         approxBytes: 9000 * 1024 * 1024,
@@ -218,12 +245,13 @@ export const OPEN_MODELS: ModelMetadata[] = [
         filename: 'Qwen2.5-14B-Instruct-Q4_K_M.gguf',
         url: 'https://huggingface.co/bartowski/Qwen2.5-14B-Instruct-GGUF/resolve/main/Qwen2.5-14B-Instruct-Q4_K_M.gguf',
         tier: 'frontier',
-        description: 'Frontier-class 14B reasoning & coding. Fits comfortably on 16 GB PCs.'
+        description: 'Alibaba’s 14B model for stronger reasoning and coding. Fits on 16 GB PCs.'
     },
     {
         id: 'deepseek-r1-14b',
         name: 'DeepSeek R1 Distill Qwen 14B',
         parameters: '14B',
+        released: '2025-01-20',
         quant: 'Q4_K_M',
         sizeText: '~9.0 GB',
         approxBytes: 9000 * 1024 * 1024,
@@ -232,12 +260,15 @@ export const OPEN_MODELS: ModelMetadata[] = [
         filename: 'DeepSeek-R1-Distill-Qwen-14B-Q4_K_M.gguf',
         url: 'https://huggingface.co/bartowski/DeepSeek-R1-Distill-Qwen-14B-GGUF/resolve/main/DeepSeek-R1-Distill-Qwen-14B-Q4_K_M.gguf',
         tier: 'frontier',
-        description: 'Frontier reasoning model with deep chain-of-thought analysis for 16 GB machines.'
+        description: 'Frontier reasoning model with deep chain-of-thought analysis for 16 GB machines.',
+        retired: true,
+        thinking: 'always'
     },
     {
         id: 'phi-4-14b',
         name: 'Phi-4 14B Instruct',
         parameters: '14B',
+        released: '2024-12-12',
         quant: 'Q4_K_M',
         sizeText: '~9.1 GB',
         approxBytes: 9100 * 1024 * 1024,
@@ -247,8 +278,119 @@ export const OPEN_MODELS: ModelMetadata[] = [
         url: 'https://huggingface.co/bartowski/phi-4-GGUF/resolve/main/phi-4-Q4_K_M.gguf',
         tier: 'frontier',
         description: 'Microsoft’s flagship 14B synthetic reasoning model. High density performance.'
+    },
+    {
+        id: 'qwen3.5-4b',
+        name: 'Qwen3.5 4B',
+        parameters: '4B',
+        released: '2026-03-02',
+        quant: 'Q4_K_M',
+        sizeText: '~2.7 GB',
+        approxBytes: 2613 * 1024 * 1024,
+        ramNeededText: '~3.8 GB RAM',
+        minTotalRamGb: 8,
+        filename: 'Qwen3.5-4B-Q4_K_M.gguf',
+        url: 'https://huggingface.co/unsloth/Qwen3.5-4B-GGUF/resolve/main/Qwen3.5-4B-Q4_K_M.gguf',
+        tier: 'lightweight',
+        description: 'Alibaba’s 2026 4B model. Among the strongest models of its size for chat, coding and reasoning.',
+        thinking: 'optional'
+    },
+    {
+        id: 'qwen3.5-9b',
+        name: 'Qwen3.5 9B',
+        parameters: '9B',
+        released: '2026-03-02',
+        quant: 'Q4_K_M',
+        sizeText: '~5.7 GB',
+        approxBytes: 5417 * 1024 * 1024,
+        ramNeededText: '~6.8 GB RAM',
+        minTotalRamGb: 12,
+        filename: 'Qwen3.5-9B-Q4_K_M.gguf',
+        url: 'https://huggingface.co/unsloth/Qwen3.5-9B-GGUF/resolve/main/Qwen3.5-9B-Q4_K_M.gguf',
+        tier: 'mid',
+        description: 'Alibaba’s 2026 9B model. One of the strongest open models under 10B parameters.',
+        thinking: 'optional'
+    },
+    {
+        id: 'gemma-4-e2b',
+        name: 'Gemma 4 E2B',
+        parameters: '5.1B',
+        activeParameters: '2.3B',
+        released: '2026-04-02',
+        quant: 'Q4_K_M',
+        sizeText: '~3.1 GB',
+        approxBytes: 2966 * 1024 * 1024,
+        ramNeededText: '~4.0 GB RAM',
+        minTotalRamGb: 6,
+        filename: 'gemma-4-E2B-it-Q4_K_M.gguf',
+        url: 'https://huggingface.co/unsloth/gemma-4-E2B-it-GGUF/resolve/main/gemma-4-E2B-it-Q4_K_M.gguf',
+        tier: 'lightweight',
+        description: 'Google’s 2026 small model. 5.1B parameters in total but runs about as fast as a 2B model.',
+        thinking: 'optional'
+    },
+    {
+        id: 'gemma-4-e4b',
+        name: 'Gemma 4 E4B',
+        parameters: '8B',
+        activeParameters: '4.5B',
+        released: '2026-04-02',
+        quant: 'Q4_K_M',
+        sizeText: '~5.0 GB',
+        approxBytes: 4749 * 1024 * 1024,
+        ramNeededText: '~6.0 GB RAM',
+        minTotalRamGb: 12,
+        filename: 'gemma-4-E4B-it-Q4_K_M.gguf',
+        url: 'https://huggingface.co/unsloth/gemma-4-E4B-it-GGUF/resolve/main/gemma-4-E4B-it-Q4_K_M.gguf',
+        tier: 'mid',
+        description: 'Google’s 2026 model for mid-range PCs. 8B parameters in total but runs about as fast as a 4B model.',
+        thinking: 'optional'
+    },
+    {
+        id: 'gemma-4-26b-a4b',
+        name: 'Gemma 4 26B A4B',
+        parameters: '26B',
+        activeParameters: '3.8B',
+        released: '2026-04-02',
+        quant: 'UD-Q4_K_M',
+        sizeText: '~17 GB',
+        approxBytes: 16165 * 1024 * 1024,
+        ramNeededText: '~18 GB RAM',
+        minTotalRamGb: 24,
+        filename: 'gemma-4-26B-A4B-it-UD-Q4_K_M.gguf',
+        url: 'https://huggingface.co/unsloth/gemma-4-26B-A4B-it-GGUF/resolve/main/gemma-4-26B-A4B-it-UD-Q4_K_M.gguf',
+        tier: 'frontier',
+        description: 'Google’s 2026 mixture-of-experts model for 32 GB PCs: 26B parameters, of which about 4B work on each word, so it answers quickly for its size.',
+        thinking: 'optional'
     }
 ]
+
+// Gemma 2 entries once had Gemma 4 ids and filenames although they download Gemma 2. Old id ->
+// current id and the filename an earlier version saved the download under.
+const RENAMED_MODELS: Record<string, { id: string; oldFilename: string }> = {
+    'gemma-4-e2b': { id: 'gemma-2-2b', oldFilename: 'gemma-4-e2b-it-Q4_K_M.gguf' },
+    'gemma-4-e4b': { id: 'gemma-2-2b-q8', oldFilename: 'gemma-4-e4b-it-Q4_K_M.gguf' },
+    'gemma-4-12b': { id: 'gemma-2-9b-q6', oldFilename: 'gemma-4-12b-it-Q4_K_M.gguf' },
+}
+
+/** Maps a model id saved by an earlier version to its current id. */
+export function currentModelId(modelId: string): string {
+    return RENAMED_MODELS[modelId]?.id ?? modelId
+}
+
+/** Renames files downloaded under the old Gemma names so they are not downloaded again. */
+export function migrateRenamedModelFiles(): void {
+    for (const { id, oldFilename } of Object.values(RENAMED_MODELS)) {
+        const meta = OPEN_MODELS.find(m => m.id === id)
+        if (!meta) continue
+        const from = getModelPath(oldFilename)
+        const to = getModelPath(meta.filename)
+        try {
+            if (fs.existsSync(from) && !fs.existsSync(to)) fs.renameSync(from, to)
+        } catch (err) {
+            console.error(`[LLM] Could not rename ${oldFilename}:`, err)
+        }
+    }
+}
 
 export type LlmStatus = 'not-downloaded' | 'downloading' | 'loading' | 'ready' | 'error'
 
@@ -326,7 +468,7 @@ export function isModelDownloaded(modelIdOrFilename: string): boolean {
 
 export function getModelCatalog(hardware?: HardwareProfile): ModelCatalogItem[] {
     const hw = hardware || detectHardware()
-    return OPEN_MODELS.map(m => {
+    return OPEN_MODELS.filter(m => !m.retired || isModelDownloaded(m.id)).map(m => {
         const downloaded = isModelDownloaded(m.id)
         const isCompatible = hw.totalRamGb >= m.minTotalRamGb
         let compatibilityReason = `Requires ~${m.minTotalRamGb} GB RAM (Your PC: ${hw.totalRamGb} GB)`
@@ -680,8 +822,8 @@ export async function initLlm(onDownloadProgress?: (progress: { modelId: string;
 
 // Tuned against small (1B) models: this wording kept every dictated word (0% changed) on all test
 // inputs, whereas a looser "fix errors" prompt rewrote 25-65% of a long dictation.
-function buildSystemPrompt(surroundingContext?: string): string {
-    let prompt = `You add punctuation and capitalization to dictated speech. Keep every word exactly as spoken, in the same order. Never summarize, rephrase, shorten, or drop words. Never change "I" to "you". Reply with the corrected text only.`
+function buildSystemPrompt(surroundingContext?: string, style: CleanupStyle = 'exact'): string {
+    let prompt = style === 'smart' ? SMART_PROMPT : EXACT_PROMPT
 
     if (surroundingContext && surroundingContext.trim().length > 0) {
         const trimmed = surroundingContext.slice(-400)
@@ -696,7 +838,7 @@ const REFORMAT_MAX_INPUT_CHARS = 5000
 
 /** Reasoning models write chain-of-thought into their output; unusable for in-place cleanup. */
 function isReasoningModel(): boolean {
-    return activeModelId.startsWith('deepseek-r1')
+    return OPEN_MODELS.find(m => m.id === activeModelId)?.thinking === 'always'
 }
 
 async function ensureCleanupSequence(): Promise<any> {
@@ -713,14 +855,23 @@ function resetCleanupContext(): void {
     cleanupSeq = null
 }
 
-export function reformatText(rawText: string, surroundingContext?: string): Promise<string> {
+export function reformatText(rawText: string, surroundingContext?: string, style: CleanupStyle = 'exact'): Promise<string> {
     // One cleanup at a time: they share a single sequence.
-    const run = cleanupQueue.then(() => reformatTextNow(rawText, surroundingContext), () => reformatTextNow(rawText, surroundingContext))
+    const go = async () => {
+        if (style === 'smart') {
+            const smart = await reformatTextNow(rawText, surroundingContext, 'smart')
+            if (smart !== null) return smart
+            // The smart edit went too far; a word-for-word cleanup is still better than none.
+        }
+        return (await reformatTextNow(rawText, surroundingContext, 'exact')) ?? rawText
+    }
+    const run = cleanupQueue.then(go, go)
     cleanupQueue = run.catch(() => undefined)
     return run
 }
 
-async function reformatTextNow(rawText: string, surroundingContext?: string): Promise<string> {
+/** The cleaned text, or null when the model's output was rejected (the caller decides what then). */
+async function reformatTextNow(rawText: string, surroundingContext: string | undefined, style: CleanupStyle): Promise<string | null> {
     if (status !== 'ready' || !model || isReasoningModel()) {
         return rawText
     }
@@ -738,7 +889,9 @@ async function reformatTextNow(rawText: string, surroundingContext?: string): Pr
         const seq = await ensureCleanupSequence()
         session = new LlamaChatSession({
             contextSequence: seq,
-            systemPrompt: buildSystemPrompt(surroundingContext)
+            // Cleanup must answer within a second or two, so models that can think never do here.
+            chatWrapper: await chatWrapperFor(model, activeModelId, false),
+            systemPrompt: buildSystemPrompt(surroundingContext, style)
         })
 
         // Output is roughly the same length as the input, so size the budget from the input
@@ -754,15 +907,17 @@ async function reformatTextNow(rawText: string, surroundingContext?: string): Pr
 
         const cleaned = stripAddedQuotes(rawText, response)
 
-        // Reject empty, runaway or visibly truncated output and keep the dictated text.
-        if (!cleaned || cleaned.length < rawText.length * 0.6 || cleaned.length > rawText.length * 3) {
-            return rawText
+        // Reject empty, runaway or visibly truncated output. Smart editing legitimately shortens.
+        const minLength = style === 'smart' ? 0.4 : 0.6
+        if (!cleaned || cleaned.length < rawText.length * minLength || cleaned.length > rawText.length * 3) {
+            return null
         }
 
-        // Cleanup may punctuate and fix a slip, but must not rewrite what was said.
-        if (!isFaithfulCleanup(rawText, cleaned)) {
-            console.warn('[LLM] Cleanup changed too many words; keeping the original text')
-            return rawText
+        // Cleanup may punctuate and fix a slip (smart: also drop corrections), but must not rewrite.
+        const faithful = style === 'smart' ? isFaithfulSmartCleanup(rawText, cleaned) : isFaithfulCleanup(rawText, cleaned)
+        if (!faithful) {
+            console.warn(`[LLM] ${style} cleanup changed too much; ${style === 'smart' ? 'trying an exact cleanup' : 'keeping the original text'}`)
+            return null
         }
 
         return cleaned
@@ -775,6 +930,61 @@ async function reformatTextNow(rawText: string, surroundingContext?: string): Pr
         // The sequence may be in an undefined state after an abort/error; start clean next time.
         resetCleanupContext()
         return rawText
+    } finally {
+        clearTimeout(timer)
+        try { session?.dispose({ disposeSequence: false }) } catch { }
+        try { await cleanupSeq?.clearHistory() } catch { resetCleanupContext() }
+    }
+}
+
+const COMMAND_TIMEOUT_MS = 30000
+const COMMAND_MAX_SELECTION_CHARS = 8000
+
+/**
+ * Voice command: applies a spoken instruction ("make this more formal") to the selected text, or,
+ * with nothing selected, writes what was asked for. Runs on the cleanup model, which is the one
+ * kept loaded for dictation. Throws with a message for the user when it cannot run.
+ */
+export function runVoiceCommand(instruction: string, selection: string): Promise<string> {
+    const go = () => runVoiceCommandNow(instruction, selection)
+    const run = cleanupQueue.then(go, go)
+    cleanupQueue = run.catch(() => undefined)
+    return run
+}
+
+async function runVoiceCommandNow(instruction: string, selection: string): Promise<string> {
+    if (status !== 'ready' || !model) {
+        throw new Error('Voice commands use the text cleanup model. Turn on Text cleanup in Settings.')
+    }
+    if (isReasoningModel()) throw new Error('The text cleanup model thinks out loud; choose another one for voice commands.')
+    if (selection.length > COMMAND_MAX_SELECTION_CHARS) throw new Error('The selected text is too long for a voice command.')
+
+    const { LlamaChatSession } = await import('node-llama-cpp')
+    let session: any = null
+    const abort = new AbortController()
+    const timer = setTimeout(() => abort.abort(), COMMAND_TIMEOUT_MS)
+    try {
+        const seq = await ensureCleanupSequence()
+        session = new LlamaChatSession({
+            contextSequence: seq,
+            chatWrapper: await chatWrapperFor(model, activeModelId, false),
+            systemPrompt: selection.trim() ? COMMAND_EDIT_PROMPT : COMMAND_WRITE_PROMPT
+        })
+        // Room for the rewrite plus some growth ("expand this"), or for a short piece of writing.
+        const maxTokens = Math.min(2048, Math.ceil(selection.length / 2) + 512)
+        const response: string = await session.prompt(commandUserMessage(instruction, selection), {
+            maxTokens,
+            temperature: 0.3,
+            signal: abort.signal
+        })
+        const text = stripAddedQuotes(selection, response).trim()
+        if (!text) throw new Error('The model returned nothing.')
+        return text
+    } catch (err: any) {
+        // The sequence may be in an undefined state after an abort/error; start clean next time.
+        resetCleanupContext()
+        if (abort.signal.aborted) throw new Error('The voice command took too long.')
+        throw err
     } finally {
         clearTimeout(timer)
         try { session?.dispose({ disposeSequence: false }) } catch { }
@@ -846,10 +1056,46 @@ export function unloadChatModel(): void {
     chatError = ''
 }
 
+// Whether chat models that can think before answering should. Off by default: thinking makes
+// replies much slower, which most chat does not need.
+let chatThinking = false
+
+export function setChatThinking(on: boolean): void {
+    if (on === chatThinking) return
+    chatThinking = on
+    // The setting is part of the session's prompt format; the next message starts a new session
+    // and replays the conversation into it.
+    abortChat()
+    try { activeChatSession?.dispose() } catch { }
+    activeChatSession = null
+}
+
+export function getChatThinking(): boolean {
+    return chatThinking
+}
+
+/**
+ * A chat wrapper with thinking switched on or off, for models where that is optional. Covers the
+ * built-in Qwen3.5 and Gemma 4 wrappers and, should the model's own template be used instead, the
+ * enable_thinking flag those templates read. Other models keep the wrapper node-llama-cpp picks.
+ */
+async function chatWrapperFor(llamaModel: any, modelId: string, thinking: boolean): Promise<any> {
+    if (OPEN_MODELS.find(m => m.id === modelId)?.thinking !== 'optional') return 'auto'
+    const { resolveChatWrapper } = await import('node-llama-cpp')
+    return resolveChatWrapper(llamaModel, {
+        customWrapperSettings: {
+            qwen: { thoughts: thinking ? 'auto' : 'discourage' },
+            gemma4: { reasoning: thinking },
+            jinjaTemplate: { additionalRenderParameters: { enable_thinking: thinking } }
+        }
+    })
+}
+
 export async function chatStream(
     messages: { role: 'user' | 'assistant' | 'system'; content: string }[],
     onToken: (token: string) => void,
-    signal?: { aborted: boolean }
+    signal?: { aborted: boolean },
+    onThought?: (text: string) => void
 ): Promise<string> {
     await loadChatModel()
 
@@ -858,6 +1104,7 @@ export async function chatStream(
     if (!activeChatSession) {
         activeChatSession = new LlamaChatSession({
             contextSequence: chatCtx.getSequence(),
+            chatWrapper: await chatWrapperFor(chatCtx.model, chatModelId, chatThinking),
             systemPrompt: CHAT_SYSTEM_PROMPT,
             // The chat context has one sequence; it must be freed when Clear disposes the session.
             autoDisposeSequence: true
@@ -890,6 +1137,10 @@ export async function chatStream(
                 if (signal?.aborted || activeChatAbortController?.signal.aborted) return
                 fullResponse += chunk
                 onToken(chunk)
+            },
+            // The reasoning before the answer arrives as thought segments, separate from the reply.
+            onResponseChunk: (chunk: any) => {
+                if (chunk.type === 'segment' && chunk.segmentType === 'thought' && chunk.text) onThought?.(chunk.text)
             }
         })
     } catch (err: any) {

@@ -2867,3 +2867,9 @@ body.mini-mode #island-dot {
   max-height: 240px;
   overflow-y: auto;
 }
+
+/* Cleanup style belongs to the Text cleanup row above it: no divider, text aligned with its label */
+.s-card > .s-row-sub {
+  border-top: none;
+  padding: 0 14px 11px 60px;
+}

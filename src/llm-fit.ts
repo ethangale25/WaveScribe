@@ -40,8 +40,8 @@ const RAM_HEADROOM = 0.85;
 // Best first. Reasoning (DeepSeek R1) models are left out: they think out loud before answering,
 // which is slow for chat and unusable for cleanup.
 const CHAT_RANKING = [
-  'qwen-2.5-14b', 'phi-4-14b', 'gemma-4-12b', 'gemma-2-9b', 'llama-3.1-8b', 'qwen-2.5-7b',
-  'qwen3-4b-instruct', 'phi-4-mini', 'llama-3.2-3b', 'gemma-4-e4b', 'gemma-4-e2b', 'qwen-2.5-1.5b', 'llama-3.2-1b',
+  'qwen-2.5-14b', 'phi-4-14b', 'gemma-2-9b-q6', 'gemma-2-9b', 'llama-3.1-8b', 'qwen-2.5-7b',
+  'qwen3-4b-instruct', 'phi-4-mini', 'llama-3.2-3b', 'gemma-2-2b-q8', 'gemma-2-2b', 'qwen-2.5-1.5b', 'llama-3.2-1b',
 ];
 // Cleanup must keep every word and finish within a second or two, so bigger is not better here.
 const CLEANUP_RANKING = ['qwen3-4b-instruct', 'qwen-2.5-1.5b', 'llama-3.2-1b'];

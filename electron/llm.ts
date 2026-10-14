@@ -39,7 +39,7 @@ export const OPEN_MODELS: ModelMetadata[] = [
         filename: 'Llama-3.2-1B-Instruct-Q4_K_M.gguf',
         url: 'https://huggingface.co/bartowski/Llama-3.2-1B-Instruct-GGUF/resolve/main/Llama-3.2-1B-Instruct-Q4_K_M.gguf',
         tier: 'lightweight',
-        description: 'Meta’s newest ultra-fast lightweight model. Lightning quick on all PCs.'
+        description: 'Meta’s 1B model from 2024. Very quick on any PC.'
     },
     {
         id: 'qwen-2.5-1.5b',
@@ -117,7 +117,7 @@ export const OPEN_MODELS: ModelMetadata[] = [
         description: 'Microsoft’s high-density reasoning, math, and logic model.'
     },
     {
-        id: 'gemma-4-e2b',
+        id: 'gemma-2-2b',
         name: 'Gemma 2 2B Instruct',
         parameters: '2B',
         released: '2024-07-31',
@@ -126,14 +126,14 @@ export const OPEN_MODELS: ModelMetadata[] = [
         approxBytes: 1500 * 1024 * 1024,
         ramNeededText: '~2.2 GB RAM',
         minTotalRamGb: 4,
-        filename: 'gemma-4-e2b-it-Q4_K_M.gguf',
+        filename: 'gemma-2-2b-it-Q4_K_M.gguf',
         url: 'https://huggingface.co/bartowski/gemma-2-2b-it-GGUF/resolve/main/gemma-2-2b-it-Q4_K_M.gguf',
         tier: 'lightweight',
         description: 'Google’s efficient 2B Gemma 2 model for rapid local inference on any PC.'
     },
     {
-        id: 'gemma-4-e4b',
-        name: 'Gemma 2 2B Instruct (High Quality)',
+        id: 'gemma-2-2b-q8',
+        name: 'Gemma 2 2B Instruct (8-bit)',
         parameters: '2B',
         released: '2024-07-31',
         quant: 'Q8_0',
@@ -141,7 +141,7 @@ export const OPEN_MODELS: ModelMetadata[] = [
         approxBytes: 2780 * 1024 * 1024,
         ramNeededText: '~3.6 GB RAM',
         minTotalRamGb: 8,
-        filename: 'gemma-4-e4b-it-Q4_K_M.gguf',
+        filename: 'gemma-2-2b-it-Q8_0.gguf',
         url: 'https://huggingface.co/bartowski/gemma-2-2b-it-GGUF/resolve/main/gemma-2-2b-it-Q8_0.gguf',
         tier: 'lightweight',
         description: 'The same Gemma 2 2B at 8-bit precision: closer to full quality, with a larger footprint.'
@@ -162,8 +162,8 @@ export const OPEN_MODELS: ModelMetadata[] = [
         description: 'Google’s high-performing 9B architecture with exceptional general knowledge and instruction following.'
     },
     {
-        id: 'gemma-4-12b',
-        name: 'Gemma 2 9B Instruct (High Quality)',
+        id: 'gemma-2-9b-q6',
+        name: 'Gemma 2 9B Instruct (6-bit)',
         parameters: '9B',
         released: '2024-06-27',
         quant: 'Q6_K',
@@ -171,7 +171,7 @@ export const OPEN_MODELS: ModelMetadata[] = [
         approxBytes: 7600 * 1024 * 1024,
         ramNeededText: '~8.8 GB RAM',
         minTotalRamGb: 15,
-        filename: 'gemma-4-12b-it-Q4_K_M.gguf',
+        filename: 'gemma-2-9b-it-Q6_K.gguf',
         url: 'https://huggingface.co/bartowski/gemma-2-9b-it-GGUF/resolve/main/gemma-2-9b-it-Q6_K.gguf',
         tier: 'frontier',
         description: 'Gemma 2 9B at 6-bit precision for the best quality this family offers on a 16 GB PC.'
@@ -189,7 +189,7 @@ export const OPEN_MODELS: ModelMetadata[] = [
         filename: 'qwen2.5-7b-instruct-q4_k_m.gguf',
         url: 'https://huggingface.co/Qwen/Qwen2.5-7B-Instruct-GGUF/resolve/main/qwen2.5-7b-instruct-q4_k_m.gguf',
         tier: 'mid',
-        description: 'State-of-the-art 7B benchmark leader. Exceptional coding & reasoning.'
+        description: 'Alibaba’s 7B model. Strong at coding and reasoning for its size.'
     },
     {
         id: 'llama-3.1-8b',
@@ -234,7 +234,7 @@ export const OPEN_MODELS: ModelMetadata[] = [
         filename: 'Qwen2.5-14B-Instruct-Q4_K_M.gguf',
         url: 'https://huggingface.co/bartowski/Qwen2.5-14B-Instruct-GGUF/resolve/main/Qwen2.5-14B-Instruct-Q4_K_M.gguf',
         tier: 'frontier',
-        description: 'Frontier-class 14B reasoning & coding. Fits comfortably on 16 GB PCs.'
+        description: 'Alibaba’s 14B model for stronger reasoning and coding. Fits on 16 GB PCs.'
     },
     {
         id: 'deepseek-r1-14b',
@@ -267,6 +267,34 @@ export const OPEN_MODELS: ModelMetadata[] = [
         description: 'Microsoft’s flagship 14B synthetic reasoning model. High density performance.'
     }
 ]
+
+// Gemma 2 entries once had Gemma 4 ids and filenames although they download Gemma 2. Old id ->
+// current id and the filename an earlier version saved the download under.
+const RENAMED_MODELS: Record<string, { id: string; oldFilename: string }> = {
+    'gemma-4-e2b': { id: 'gemma-2-2b', oldFilename: 'gemma-4-e2b-it-Q4_K_M.gguf' },
+    'gemma-4-e4b': { id: 'gemma-2-2b-q8', oldFilename: 'gemma-4-e4b-it-Q4_K_M.gguf' },
+    'gemma-4-12b': { id: 'gemma-2-9b-q6', oldFilename: 'gemma-4-12b-it-Q4_K_M.gguf' },
+}
+
+/** Maps a model id saved by an earlier version to its current id. */
+export function currentModelId(modelId: string): string {
+    return RENAMED_MODELS[modelId]?.id ?? modelId
+}
+
+/** Renames files downloaded under the old Gemma names so they are not downloaded again. */
+export function migrateRenamedModelFiles(): void {
+    for (const { id, oldFilename } of Object.values(RENAMED_MODELS)) {
+        const meta = OPEN_MODELS.find(m => m.id === id)
+        if (!meta) continue
+        const from = getModelPath(oldFilename)
+        const to = getModelPath(meta.filename)
+        try {
+            if (fs.existsSync(from) && !fs.existsSync(to)) fs.renameSync(from, to)
+        } catch (err) {
+            console.error(`[LLM] Could not rename ${oldFilename}:`, err)
+        }
+    }
+}
 
 export type LlmStatus = 'not-downloaded' | 'downloading' | 'loading' | 'ready' | 'error'
 

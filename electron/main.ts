@@ -18,6 +18,8 @@ import {
     abortChat,
     isModelDownloaded,
     setPreferredModel,
+    currentModelId,
+    migrateRenamedModelFiles,
     cancelDownload,
     setChatModel,
     loadChatModel,
@@ -404,6 +406,11 @@ app.whenReady().then(async () => {
     mainWindow?.on('focus', checkForUpdatesIfStale)
 
     // Auto-init LLM if enabled and model is already downloaded
+    migrateRenamedModelFiles()
+    for (const key of ['llmModelId', 'chatModelId']) {
+        const saved = store.get(key) as string | undefined
+        if (saved && currentModelId(saved) !== saved) store.set(key, currentModelId(saved))
+    }
     const savedLlm = store.get('llmModelId') as string | undefined
     if (savedLlm) setPreferredModel(savedLlm)
     // Before chat had its own model, the chat picker set llmModelId; carry that choice over.

@@ -5,6 +5,7 @@ import { isFaithfulCleanup, wordChangeRatio } from '../electron/fidelity';
 import { findQuietestCut, countSpeechWindows, applyVAD } from '../src/dsp';
 import { PhraseSegmenter } from '../src/segmenter';
 import { assessLlmFit, recommendLlm } from '../src/llm-fit';
+import { parseModelSort, parseParamCount, sortModels, DEFAULT_MODEL_SORT } from '../src/model-sort';
 
 const seg = (text: string, forcedCut = false) => ({ text, forcedCut });
 
@@ -278,4 +279,43 @@ test('llm recommend: chat gets the biggest model that runs great, never a reason
 
 test('llm recommend: cleanup sticks to the tested small model even on a big GPU', () => {
     assert.equal(recommendLlm('cleanup', LLMS, free(40, 22)), 'qwen3-4b-instruct');
+});
+
+const sortRow = (id: string, over: Partial<{ name: string; params: number; bytes: number; released: string; fit: 'great' | 'slow' | 'too-big'; rank: number }> = {}) =>
+    ({ id, name: id, params: 0, bytes: 0, released: '2024-01-01', fit: 'great' as const, rank: 0, ...over });
+const ids = (rows: { id: string }[]) => rows.map(r => r.id);
+
+test('model sort: reads parameter counts', () => {
+    assert.equal(parseParamCount('1.5B'), 1.5e9);
+    assert.equal(parseParamCount('394M'), 3.94e8);
+    assert.equal(parseParamCount(''), 0);
+});
+
+test('model sort: recommended first, then by fit, then curated rank', () => {
+    const rows = [sortRow('slow', { fit: 'slow', rank: 0 }), sortRow('b', { rank: 2 }), sortRow('rec', { rank: 5 }), sortRow('a', { rank: 1 })];
+    assert.deepEqual(ids(sortModels(rows, DEFAULT_MODEL_SORT, 'rec')), ['rec', 'a', 'b', 'slow']);
+});
+
+test('model sort: by parameters, size, release date and name in either direction', () => {
+    const rows = () => [
+        sortRow('Qwen 14B', { params: 14e9, bytes: 9, released: '2024-09-19' }),
+        sortRow('Llama 1B', { params: 1e9, bytes: 1, released: '2024-09-25' }),
+        sortRow('Qwen 7B', { params: 7e9, bytes: 5, released: '2025-01-20' }),
+    ];
+    assert.deepEqual(ids(sortModels(rows(), { key: 'params', dir: 'asc' }, null)), ['Llama 1B', 'Qwen 7B', 'Qwen 14B']);
+    assert.deepEqual(ids(sortModels(rows(), { key: 'size', dir: 'desc' }, null)), ['Qwen 14B', 'Qwen 7B', 'Llama 1B']);
+    assert.deepEqual(ids(sortModels(rows(), { key: 'released', dir: 'desc' }, null)), ['Qwen 7B', 'Llama 1B', 'Qwen 14B']);
+    // Numbers inside names sort naturally: 7B before 14B.
+    assert.deepEqual(ids(sortModels(rows(), { key: 'name', dir: 'asc' }, null)), ['Llama 1B', 'Qwen 7B', 'Qwen 14B']);
+});
+
+test('model sort: ties fall back to name', () => {
+    const rows = [sortRow('b', { params: 2 }), sortRow('a', { params: 2 })];
+    assert.deepEqual(ids(sortModels(rows, { key: 'params', dir: 'desc' }, null)), ['a', 'b']);
+});
+
+test('model sort: ignores a missing or unknown saved setting', () => {
+    assert.deepEqual(parseModelSort(undefined), DEFAULT_MODEL_SORT);
+    assert.deepEqual(parseModelSort({ key: 'bogus', dir: 'desc' }), DEFAULT_MODEL_SORT);
+    assert.deepEqual(parseModelSort({ key: 'released', dir: 'desc' }), { key: 'released', dir: 'desc' });
 });

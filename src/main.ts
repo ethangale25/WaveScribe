@@ -4,6 +4,7 @@ import { getHardwareInfo } from './hardware-info';
 import { buildSetups, recommendDevice, defaultCpuThreads, modelFamily, SpeedSample, Setup } from './setups';
 import { runSpeedTest, benchCpuThreads } from './speedtest';
 import { DEFAULT_MODEL_ID, MODEL_VRAM_MB, MODEL_DETAILS, isHfModelDownloaded } from './models';
+import { DEFAULT_SORT_DIR, MODEL_SORT_LABELS, parseModelSort, parseParamCount, sortModels, type ModelSort, type ModelSortKey } from './model-sort';
 import { escapeHtml, removeFillers, applyDictionary, applyAutoFormatting, countWords } from './postprocess';
 import { loadModel, transcribeAudio, isModelLoaded, getCurrentDevice, StreamingTranscriptionSession } from './transcribe';
 import { initDiagnostics } from './diagnostics';
@@ -65,6 +66,7 @@ declare global {
         id: string
         name: string
         parameters: string
+        released: string
         quant: string
         sizeText: string
         approxBytes: number
@@ -494,6 +496,13 @@ if (appElement) {
               <p class="picker-sub" id="picker-sub">Checking your PC…</p>
             </div>
             <button class="btn-close" id="chat-models-close" title="Close">${icon('close')}</button>
+          </div>
+          <div class="pick-sort">
+            <label for="picker-sort">Sort by</label>
+            <select id="picker-sort" class="s-control">
+              ${(Object.keys(MODEL_SORT_LABELS) as ModelSortKey[]).map(k => `<option value="${k}">${MODEL_SORT_LABELS[k]}</option>`).join('')}
+            </select>
+            <button class="btn btn-secondary btn-small" id="picker-sort-dir"></button>
           </div>
         </div>
 
@@ -2557,6 +2566,10 @@ if (appElement) {
     sizeText: string;
     removable: boolean;
     rank: number;
+    paramsText: string;
+    params: number;
+    bytes: number;
+    released: string;
   }
 
   const speechRows = async (mem: MemorySnapshot): Promise<{ rows: PickerRow[]; selectedId: string; recommendedId: string }> => {
@@ -2576,6 +2589,8 @@ if (appElement) {
         isDownloaded: await isHfModelDownloaded(id),
         downloadProgress: speechDownload?.modelId === id ? speechDownload.percent : null,
         sizeText: MODEL_DETAILS[id]?.sizeText || '', removable: false, rank,
+        paramsText: MODEL_DETAILS[id]?.params || '', params: parseParamCount(MODEL_DETAILS[id]?.params || ''),
+        bytes: MODEL_DETAILS[id]?.approxBytes ?? 0, released: MODEL_DETAILS[id]?.released || '',
       };
     }));
     return { rows, selectedId: inputModel.value || DEFAULT_MODEL_ID, recommendedId: DEFAULT_MODEL_ID };
@@ -2592,6 +2607,7 @@ if (appElement) {
         isDownloaded: m.isDownloaded,
         downloadProgress: status.activeDownloadModelId === m.id ? m.downloadProgress : null,
         sizeText: m.sizeText.replace('~', ''), removable: m.isDownloaded, rank: rankFor(purpose, m.id),
+        paramsText: m.parameters, params: parseParamCount(m.parameters), bytes: m.approxBytes, released: m.released,
       };
     });
     return {
@@ -2600,6 +2616,53 @@ if (appElement) {
       recommendedId: recommendLlm(purpose, models, mem),
     };
   };
+
+  // How the user likes the picker sorted, shared by all three pickers and kept between runs.
+  let modelSort: ModelSort | null = null;
+  const getModelSort = async (): Promise<ModelSort> => {
+    if (!modelSort) {
+      const settings = await window.electronAPI.getSettings().catch(() => null);
+      modelSort = parseModelSort(settings?.modelSort);
+    }
+    return modelSort;
+  };
+  const setModelSort = async (sort: ModelSort) => {
+    modelSort = sort;
+    renderSortControls(sort);
+    await renderModelPicker();
+    await window.electronAPI.setSetting('modelSort', sort);
+  };
+
+  const pickerSortSelect = document.getElementById('picker-sort') as HTMLSelectElement | null;
+  const pickerSortDir = document.getElementById('picker-sort-dir') as HTMLButtonElement | null;
+  const SORT_DIR_TEXT: Record<ModelSortKey, [string, string]> = {
+    recommended: ['', ''],
+    name: ['A to Z', 'Z to A'],
+    params: ['Smallest first', 'Largest first'],
+    size: ['Smallest first', 'Largest first'],
+    released: ['Oldest first', 'Newest first'],
+  };
+  const renderSortControls = (sort: ModelSort) => {
+    if (pickerSortSelect) pickerSortSelect.value = sort.key;
+    if (pickerSortDir) {
+      // The recommended order has no meaningful reverse.
+      pickerSortDir.style.display = sort.key === 'recommended' ? 'none' : '';
+      pickerSortDir.textContent = SORT_DIR_TEXT[sort.key][sort.dir === 'asc' ? 0 : 1];
+      pickerSortDir.title = 'Reverse the order';
+    }
+  };
+  pickerSortSelect?.addEventListener('change', () => {
+    const key = pickerSortSelect.value as ModelSortKey;
+    void setModelSort({ key, dir: DEFAULT_SORT_DIR[key] });
+  });
+  pickerSortDir?.addEventListener('click', async () => {
+    const sort = await getModelSort();
+    void setModelSort({ key: sort.key, dir: sort.dir === 'asc' ? 'desc' : 'asc' });
+  });
+
+  /** "2024-09-25" -> "Sep 2024". */
+  const formatReleased = (iso: string) =>
+    new Date(`${iso}T00:00:00`).toLocaleDateString(undefined, { month: 'short', year: 'numeric' });
 
   const PICKER_TITLES: Record<PickerPurpose, string> = { speech: 'Voice to text', cleanup: 'Text cleanup', chat: 'AI chat' };
 
@@ -2614,17 +2677,20 @@ if (appElement) {
       if (pickerTitle) pickerTitle.textContent = PICKER_TITLES[purpose];
       if (pickerSub) pickerSub.textContent = describeFreeMemory(mem);
 
-      const fitOrder = { great: 0, slow: 1, 'too-big': 2 };
-      rows.sort((a, b) =>
-        Number(b.id === recommendedId) - Number(a.id === recommendedId)
-        || fitOrder[a.fit] - fitOrder[b.fit]
-        || a.rank - b.rank);
+      const sort = await getModelSort();
+      sortModels(rows, sort, recommendedId);
+      renderSortControls(sort);
 
       const anyDownload = !!status.activeDownloadModelId;
       const rowHtml = (r: PickerRow) => {
         const isSelected = r.id === selectedId;
         const gpuFact = r.gpuNote ? `<span class="pick-fact ${r.gpuNote.ok ? 'gpu-yes' : 'gpu-no'}">${r.gpuNote.text}</span>` : '';
         const label = purpose === 'speech' && r.fit === 'slow' ? 'Slow on this PC' : fitLabel(r.fit);
+        // Whatever the list is sorted by is shown on every row, so the order makes sense at a glance.
+        const sortFact = sort.key === 'params' && r.paramsText ? `${r.paramsText} parameters`
+          : sort.key === 'released' && r.released ? `Released ${formatReleased(r.released)}`
+          : sort.key === 'size' && r.isDownloaded ? `${r.sizeText} download`
+          : '';
 
         let action: string;
         if (isSelected && r.isDownloaded) action = '<span class="badge badge-on">In use</span>';
@@ -2641,6 +2707,7 @@ if (appElement) {
               <div class="pick-facts">
                 <span class="pick-fact fit-${r.fit}"><span class="pick-dot"></span>${label}</span>
                 ${gpuFact}
+                ${sortFact ? `<span class="pick-fact">${escapeHtml(sortFact)}</span>` : ''}
                 ${r.extra ? `<span class="pick-fact">${escapeHtml(r.extra)}</span>` : ''}
                 ${r.isDownloaded ? (remove ? `<span class="pick-fact">${remove}</span>` : '') : `<span class="pick-fact">${escapeHtml(r.sizeText)}</span>`}
               </div>

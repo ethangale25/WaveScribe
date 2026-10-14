@@ -27,7 +27,10 @@ declare global {
       getSettings: () => Promise<any>
       setSetting: (key: string, value: any) => Promise<any>
       checkHotkey: (hotkey: string) => Promise<{ registered: boolean }>
-      onDictationHotkey: (callback: (action: 'toggle' | 'start' | 'stop') => void) => () => void
+      onDictationHotkey: (callback: (action: 'toggle' | 'start' | 'stop', mode: 'dictate' | 'command') => void) => () => void
+      captureSelection: () => Promise<{ text: string }>
+      llmVoiceCommand: (instruction: string, selection: string) => Promise<{ success: boolean; text?: string; error?: string }>
+      commandHotkeyState: () => Promise<{ hotkey: string; registered: boolean }>
       windowControl: (action: 'minimize' | 'maximize' | 'close') => void
       copyText: (text: string) => Promise<{ success: boolean }>
       toggleMiniMode: (isMini: boolean) => Promise<{ success: boolean }>
@@ -393,6 +396,16 @@ if (appElement) {
                 </span>
               </div>
               <small id="hotkey-warning" class="s-warn" style="display: none;">That shortcut is taken by another app.</small>
+              <div class="s-row">
+                <span class="s-label">Voice command<span class="s-hint">Select text, press this and say what to change, like “make this shorter”. With nothing selected, it writes what you ask for</span></span>
+                <select id="setting-command-hotkey" class="s-control">
+                  <option value="CommandOrControl+Alt+Space">Ctrl + Alt + Space</option>
+                  <option value="CommandOrControl+Shift+E">Ctrl + Shift + E</option>
+                  <option value="CommandOrControl+Shift+K">Ctrl + Shift + K</option>
+                  <option value="off">Off</option>
+                </select>
+              </div>
+              <small id="command-hotkey-warning" class="s-warn" style="display: none;">That shortcut is the dictation shortcut or is taken by another app.</small>
               <div class="s-row">
                 <span class="s-label">Push to talk</span>
                 <label class="switch"><input type="checkbox" id="setting-push-to-talk"><span class="slider round"></span></label>
@@ -879,6 +892,8 @@ if (appElement) {
   let runPendingAction: () => void = () => { };
   // True when the AI cleanup runs phrase by phrase during recording (so it is skipped at stop).
   let sessionPolishesWithLlm = false;
+  // 'command': the recording is a spoken instruction for the selected text ("make this shorter").
+  let recordingMode: 'dictate' | 'command' = 'dictate';
 
   const toggleRecording = async () => {
     // Don't record while settings modal is open
@@ -895,6 +910,12 @@ if (appElement) {
       const lap = (label: string) => console.log(`[Timing] ${label}: ${Math.round(performance.now() - tStop)}ms since stop`);
       isProcessing = true;
       isRecording = false;
+      const isCommand = recordingMode === 'command';
+      // Copy the selection now, while the user's app still has it; it is needed once the
+      // instruction has been transcribed.
+      const selectionPromise = isCommand && window.electronAPI
+        ? window.electronAPI.captureSelection().then(r => r.text).catch(() => '')
+        : Promise.resolve('');
 
       if (playSoundsEnabled) {
         const stopSound = new Audio(stopSoundFile);
@@ -987,13 +1008,29 @@ if (appElement) {
           processedText = applyAutoFormatting(processedText, autoCapEnabled, autoPunctEnabled);
           // Smart edit: "new paragraph", "new line" and "scratch that", on the whole dictation so
           // a command can act across phrases.
-          const smartEdit = settings?.cleanupStyle === 'smart';
+          const smartEdit = settings?.cleanupStyle === 'smart' && !isCommand;
           if (smartEdit) processedText = applySpokenCommands(processedText, autoCapEnabled, autoPunctEnabled);
 
           text = processedText;
 
           // AI cleanup of the whole text, only if it was not already done phrase by phrase.
-          if (settings?.aiReformat && window.electronAPI && !polishedBySession && text) {
+          if (isCommand && window.electronAPI && text) {
+            // Voice command: the transcribed words are the instruction, applied to the selection.
+            const instruction = text;
+            const selection = await selectionPromise;
+            lap(`selection copied (${selection.length} chars)`);
+            statusMessage!.textContent = selection ? 'Editing selection...' : 'Writing...';
+            const islandCmd = document.getElementById('island-text');
+            if (islandCmd) islandCmd.textContent = statusMessage!.textContent;
+            const result = await window.electronAPI.llmVoiceCommand(instruction, selection);
+            if (result.success && result.text) {
+              text = result.text;
+            } else {
+              text = '';
+              window.electronAPI.showNotification('Voice command', result.error || 'The voice command did not work.').catch(() => { });
+            }
+            lap('voice command done');
+          } else if (settings?.aiReformat && window.electronAPI && !polishedBySession && text) {
             const llmStatus = await window.electronAPI.llmStatus();
             if (llmStatus.status === 'ready') {
               statusMessage!.textContent = 'Reformatting...';
@@ -1016,7 +1053,7 @@ if (appElement) {
           const finalWordsCount = text.split(/\s+/).filter((w: string) => w.length > 0).length;
           const fillersRemoved = Math.max(0, originalWordsCount - finalWordsCount);
 
-          if (finalWordsCount > 0) {
+          if (finalWordsCount > 0 && !isCommand) {
             metricDictations += 1;
             metricWords += finalWordsCount;
             metricTimeSavedSec += (finalWordsCount / 0.66); // 40 wpm
@@ -1142,7 +1179,7 @@ if (appElement) {
       if (window.electronAPI) {
         try {
           const aiSettings = await window.electronAPI.getSettings();
-          if (aiSettings?.aiReformat) {
+          if (aiSettings?.aiReformat && recordingMode !== 'command') {
             capturedContextPromise = window.electronAPI.captureContext()
               .then(ctx => (ctx.success ? ctx.text : ''))
               .catch(() => '');
@@ -1158,7 +1195,7 @@ if (appElement) {
         let llmReady = false;
         // Smart edit needs the whole dictation at once (a correction often spans phrases), so it
         // runs after stop instead of phrase by phrase.
-        if (runSettings?.aiReformat && runSettings?.cleanupStyle !== 'smart' && window.electronAPI) {
+        if (runSettings?.aiReformat && runSettings?.cleanupStyle !== 'smart' && recordingMode !== 'command' && window.electronAPI) {
           try { llmReady = (await window.electronAPI.llmStatus()).status === 'ready'; } catch { }
         }
         sessionPolishesWithLlm = llmReady;
@@ -1220,9 +1257,9 @@ if (appElement) {
         drawWaveform(performance.now());
 
         statusDot!.className = 'status-indicator red';
-        statusMessage!.textContent = 'Recording...';
+        statusMessage!.textContent = recordingMode === 'command' ? 'Say what to do...' : 'Recording...';
         if (islandDot) islandDot.className = 'status-indicator red';
-        if (islandText) islandText.textContent = 'Recording...';
+        if (islandText) islandText.textContent = recordingMode === 'command' ? 'Say what to do...' : 'Recording...';
       } catch (err) {
         console.error("Microphone failed to start:", err);
         activeStreamingSession = null;
@@ -1241,26 +1278,31 @@ if (appElement) {
 
   // A hotkey press that arrives while a dictation is starting or being processed used to be
   // dropped. Remember the latest one and run it as soon as the app is free.
-  let pendingAction: 'toggle' | 'start' | 'stop' | null = null;
+  let pendingAction: { action: 'toggle' | 'start' | 'stop'; mode: 'dictate' | 'command' } | null = null;
 
-  const handleHotkeyAction = (action: 'toggle' | 'start' | 'stop') => {
+  const handleHotkeyAction = (action: 'toggle' | 'start' | 'stop', mode: 'dictate' | 'command' = 'dictate') => {
     if (isProcessing) {
-      pendingAction = action;
+      pendingAction = { action, mode };
       return;
     }
     // Push-to-talk sends explicit start/stop; ignore ones that no longer make sense.
     if (action === 'start' && isRecording) return;
     if (action === 'stop' && !isRecording) return;
+    // Either shortcut stops a recording; the one that started it decides what it is.
+    if (!isRecording) recordingMode = mode;
     toggleRecording();
   };
 
   runPendingAction = () => {
     const next = pendingAction;
     pendingAction = null;
-    if (next) setTimeout(() => handleHotkeyAction(next), 0);
+    if (next) setTimeout(() => handleHotkeyAction(next.action, next.mode), 0);
   };
 
-  recordBtn?.addEventListener('click', toggleRecording);
+  recordBtn?.addEventListener('click', () => {
+    if (!isRecording) recordingMode = 'dictate';
+    toggleRecording();
+  });
 
   // Settings Modal Elements
   const settingsBtn = document.getElementById('settings-btn');
@@ -1761,6 +1803,7 @@ if (appElement) {
       }
     }
     showCleanupStyleHint();
+    void refreshCommandHotkey();
     updateDashboardUI();
     showSetupNote('');
     settingsModal?.classList.add('active');
@@ -1913,6 +1956,24 @@ if (appElement) {
   bindSwitch(inputCap, 'autoCap');
   bindSwitch(inputPunct, 'autoPunct');
   bindSwitch(inputPushToTalk, 'pushToTalk');
+
+  const inputCommandHotkey = document.getElementById('setting-command-hotkey') as HTMLSelectElement | null;
+  const commandHotkeyWarning = document.getElementById('command-hotkey-warning');
+  const refreshCommandHotkey = async () => {
+    if (!window.electronAPI || !inputCommandHotkey) return;
+    const state = await window.electronAPI.commandHotkeyState();
+    inputCommandHotkey.value = state.hotkey;
+    if (commandHotkeyWarning) commandHotkeyWarning.style.display = state.registered ? 'none' : 'block';
+  };
+  inputCommandHotkey?.addEventListener('change', async () => {
+    const result = await window.electronAPI.setSetting('commandHotkey', inputCommandHotkey.value);
+    if (commandHotkeyWarning) commandHotkeyWarning.style.display = result?.success === false ? 'block' : 'none';
+    if (result?.success === false) {
+      // Keep showing what is actually in effect.
+      const state = await window.electronAPI.commandHotkeyState();
+      inputCommandHotkey.value = state.hotkey;
+    }
+  });
   bindSwitch(inputSounds, 'playSounds', (on) => { playSoundsEnabled = on; });
   bindSwitch(inputNotify, 'showNotify', (on) => { showNotifyEnabled = on; });
 
@@ -1935,8 +1996,8 @@ if (appElement) {
   });
 
   if (window.electronAPI) {
-    window.electronAPI.onDictationHotkey((action) => {
-      handleHotkeyAction(action);
+    window.electronAPI.onDictationHotkey((action, mode) => {
+      handleHotkeyAction(action, mode);
     });
 
     window.electronAPI.onWindowMaximized((isMax: boolean) => {

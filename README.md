@@ -48,7 +48,8 @@ Prefer to hold a key while you speak? Turn on **Push to talk** in Settings.
 - **Live transcription** phrase by phrase while you speak, with a live preview of the words so far.
 - **Clean text:** filler words (um, uh) removed, sentences capitalized and punctuated.
 - **Custom words** to fix names and terms it mishears (for example "gooey" → "GUI").
-- **Optional AI cleanup:** a local language model polishes punctuation without rewriting what you said.
+- **Optional AI cleanup:** a local language model polishes punctuation without rewriting what you said. Or choose **Smart edit**: it also drops self-corrections ("Tuesday, no wait, Wednesday") and false starts, turns spoken lists into lists, and understands "new paragraph" and "scratch that".
+- **Voice commands:** select text in any app, press **Ctrl + Alt + Space** and say what to change ("make this more formal", "turn this into bullet points", "translate to Spanish"). The selection is replaced with the result. With nothing selected, it writes what you ask for.
 - **Mini mode:** shrink WaveScribe to a small pill that floats above your work and shows when it is listening.
 - **History and stats:** your last dictations, words dictated and time saved.
 
@@ -95,6 +96,7 @@ Your audio and text stay on your PC. WaveScribe connects to the internet only to
 | --- | --- |
 | `Ctrl + Shift + Space` | Start or stop dictating (change it in Settings) |
 | Hold the shortcut | Push to talk, when enabled in Settings |
+| `Ctrl + Alt + Space` | Voice command on the selected text (change or turn off in Settings) |
 | `Enter` / `Shift + Enter` | Send a chat message / new line |
 
 ---

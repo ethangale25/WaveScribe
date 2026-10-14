@@ -5,8 +5,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
     getSettings: () => ipcRenderer.invoke('get-settings'),
     setSetting: (key: string, value: any) => ipcRenderer.invoke('set-setting', key, value),
     checkHotkey: (hotkey: string) => ipcRenderer.invoke('check-hotkey', hotkey),
-    onDictationHotkey: (callback: (action: 'toggle' | 'start' | 'stop') => void) => {
-        const handler = (_: any, action?: 'toggle' | 'start' | 'stop') => callback(action ?? 'toggle');
+    onDictationHotkey: (callback: (action: 'toggle' | 'start' | 'stop', mode: 'dictate' | 'command') => void) => {
+        const handler = (_: any, action?: 'toggle' | 'start' | 'stop', mode?: 'dictate' | 'command') => callback(action ?? 'toggle', mode ?? 'dictate');
         ipcRenderer.on('dictation-hotkey', handler);
         return () => { ipcRenderer.removeListener('dictation-hotkey', handler); }
     },
@@ -35,6 +35,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
     llmReformat: (text: string, context?: string, style?: 'exact' | 'smart') => ipcRenderer.invoke('llm-reformat', text, context, style),
     llmChatSend: (messages: { role: 'user' | 'assistant' | 'system'; content: string }[]) => ipcRenderer.invoke('llm-chat-send', { messages }),
     llmChatAbort: () => ipcRenderer.invoke('llm-chat-abort'),
+    captureSelection: () => ipcRenderer.invoke('capture-selection'),
+    llmVoiceCommand: (instruction: string, selection: string) => ipcRenderer.invoke('llm-voice-command', instruction, selection),
+    commandHotkeyState: () => ipcRenderer.invoke('command-hotkey-state'),
     llmChatClear: () => ipcRenderer.invoke('llm-chat-clear'),
     llmChatSetModel: (modelId: string) => ipcRenderer.invoke('llm-chat-set-model', modelId),
     llmChatSetThinking: (on: boolean) => ipcRenderer.invoke('llm-chat-set-thinking', on),

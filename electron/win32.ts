@@ -8,6 +8,7 @@ const INPUT_KEYBOARD = 1
 const KEYEVENTF_KEYUP = 0x0002
 const VK_CONTROL = 0x11
 const VK_V = 0x56
+const VK_C = 0x43
 
 interface Win32Api {
     sendInput: (inputs: any[], size: number) => number
@@ -61,17 +62,30 @@ function key(vk: number, up: boolean) {
     return { type: INPUT_KEYBOARD, u: { ki: { wVk: vk, wScan: 0, dwFlags: up ? KEYEVENTF_KEYUP : 0, time: 0, dwExtraInfo: 0 } } }
 }
 
-/** Sends Ctrl+V to the focused window. Returns false if the native layer failed. */
-export function sendCtrlV(): boolean {
+function send(events: ReturnType<typeof key>[]): boolean {
     const w = load()
     if (!w) return false
     try {
-        const events = [key(VK_CONTROL, false), key(VK_V, false), key(VK_V, true), key(VK_CONTROL, true)]
         return w.sendInput(events, w.inputSize) === events.length
     } catch (err) {
         console.warn('[win32] SendInput failed:', err)
         return false
     }
+}
+
+/** Sends Ctrl+V to the focused window. Returns false if the native layer failed. */
+export function sendCtrlV(): boolean {
+    return send([key(VK_CONTROL, false), key(VK_V, false), key(VK_V, true), key(VK_CONTROL, true)])
+}
+
+/** Sends Ctrl+C to the focused window (copies its selection). Returns false if the native layer failed. */
+export function sendCtrlC(): boolean {
+    return send([key(VK_CONTROL, false), key(VK_C, false), key(VK_C, true), key(VK_CONTROL, true)])
+}
+
+/** Sends key-up events, e.g. for modifiers still held down from a shortcut. */
+export function releaseKeys(virtualKeys: number[]): boolean {
+    return send(virtualKeys.map(vk => key(vk, true)))
 }
 
 /**

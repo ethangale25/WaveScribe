@@ -26,3 +26,15 @@ Example output: For the trip we need:
 - tickets
 - a hotel
 - a rental car`
+
+// Voice commands: the user selects text, says what to do with it, and the reply replaces the selection.
+export const COMMAND_EDIT_PROMPT = `You edit text for the user. You are given their text and a spoken instruction. Apply the instruction to the text and reply with the resulting text only: no introduction, no explanation, no quotation marks. Keep the text's language and formatting unless the instruction says otherwise.`
+
+// Voice commands with nothing selected: the reply is typed at the cursor.
+export const COMMAND_WRITE_PROMPT = `You write text for the user, which is typed where their cursor is. Follow their spoken instruction and reply with the text to insert only: no introduction, no explanation, no quotation marks.`
+
+export function commandUserMessage(instruction: string, selection: string): string {
+    return selection.trim()
+        ? `Instruction: ${instruction}\n\nText:\n"""\n${selection}\n"""`
+        : `Instruction: ${instruction}`
+}

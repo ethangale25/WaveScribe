@@ -7,7 +7,7 @@ import crypto from 'crypto'
 import { app } from 'electron'
 import { detectHardware, HardwareProfile } from './hardware'
 import { isFaithfulCleanup, isFaithfulSmartCleanup, stripAddedQuotes } from './fidelity'
-import { CleanupStyle, EXACT_PROMPT, SMART_PROMPT } from './cleanup-prompts'
+import { CleanupStyle, COMMAND_EDIT_PROMPT, COMMAND_WRITE_PROMPT, EXACT_PROMPT, SMART_PROMPT, commandUserMessage } from './cleanup-prompts'
 
 export interface ModelMetadata {
     id: string
@@ -930,6 +930,61 @@ async function reformatTextNow(rawText: string, surroundingContext: string | und
         // The sequence may be in an undefined state after an abort/error; start clean next time.
         resetCleanupContext()
         return rawText
+    } finally {
+        clearTimeout(timer)
+        try { session?.dispose({ disposeSequence: false }) } catch { }
+        try { await cleanupSeq?.clearHistory() } catch { resetCleanupContext() }
+    }
+}
+
+const COMMAND_TIMEOUT_MS = 30000
+const COMMAND_MAX_SELECTION_CHARS = 8000
+
+/**
+ * Voice command: applies a spoken instruction ("make this more formal") to the selected text, or,
+ * with nothing selected, writes what was asked for. Runs on the cleanup model, which is the one
+ * kept loaded for dictation. Throws with a message for the user when it cannot run.
+ */
+export function runVoiceCommand(instruction: string, selection: string): Promise<string> {
+    const go = () => runVoiceCommandNow(instruction, selection)
+    const run = cleanupQueue.then(go, go)
+    cleanupQueue = run.catch(() => undefined)
+    return run
+}
+
+async function runVoiceCommandNow(instruction: string, selection: string): Promise<string> {
+    if (status !== 'ready' || !model) {
+        throw new Error('Voice commands use the text cleanup model. Turn on Text cleanup in Settings.')
+    }
+    if (isReasoningModel()) throw new Error('The text cleanup model thinks out loud; choose another one for voice commands.')
+    if (selection.length > COMMAND_MAX_SELECTION_CHARS) throw new Error('The selected text is too long for a voice command.')
+
+    const { LlamaChatSession } = await import('node-llama-cpp')
+    let session: any = null
+    const abort = new AbortController()
+    const timer = setTimeout(() => abort.abort(), COMMAND_TIMEOUT_MS)
+    try {
+        const seq = await ensureCleanupSequence()
+        session = new LlamaChatSession({
+            contextSequence: seq,
+            chatWrapper: await chatWrapperFor(model, activeModelId, false),
+            systemPrompt: selection.trim() ? COMMAND_EDIT_PROMPT : COMMAND_WRITE_PROMPT
+        })
+        // Room for the rewrite plus some growth ("expand this"), or for a short piece of writing.
+        const maxTokens = Math.min(2048, Math.ceil(selection.length / 2) + 512)
+        const response: string = await session.prompt(commandUserMessage(instruction, selection), {
+            maxTokens,
+            temperature: 0.3,
+            signal: abort.signal
+        })
+        const text = stripAddedQuotes(selection, response).trim()
+        if (!text) throw new Error('The model returned nothing.')
+        return text
+    } catch (err: any) {
+        // The sequence may be in an undefined state after an abort/error; start clean next time.
+        resetCleanupContext()
+        if (abort.signal.aborted) throw new Error('The voice command took too long.')
+        throw err
     } finally {
         clearTimeout(timer)
         try { session?.dispose({ disposeSequence: false }) } catch { }

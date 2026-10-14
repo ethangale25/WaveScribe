@@ -14,6 +14,7 @@ import {
     getLlmStatus,
     getModelCatalog,
     chatStream,
+    runVoiceCommand,
     clearChat,
     abortChat,
     isModelDownloaded,
@@ -32,6 +33,7 @@ import { captureContext } from './context-capture'
 import { locateCaret, warmUpCaretLocator, stopCaretLocator, CaretRect } from './caret'
 import { INDICATOR_HTML, INDICATOR_SIZE, IndicatorMode } from './caret-indicator'
 import { sendCtrlV, isKeyDown } from './win32'
+import { captureSelection, snapshotClipboard } from './selection'
 import { mainKeyVirtualCode } from './hotkey'
 import { initAutoUpdate, checkForUpdatesIfStale } from './updater'
 
@@ -205,49 +207,71 @@ function createTray(icon: Electron.NativeImage) {
 
 // --- Global hotkey: toggle mode, or push-to-talk (hold to dictate) ---
 
+// Two shortcuts: dictation, and voice commands that act on the selected text ("make this shorter").
+type HotkeyMode = 'dictate' | 'command'
+const DEFAULT_COMMAND_HOTKEY = 'CommandOrControl+Alt+Space'
+
 let activeHotkey = ''
+let activeCommandHotkey = ''
 let holdActive = false
 let holdTimer: ReturnType<typeof setInterval> | null = null
 
-function sendDictationAction(action: 'toggle' | 'start' | 'stop') {
-    console.log(`[Hotkey] ${action} @ ${Date.now()}`)
-    mainWindow?.webContents.send('dictation-hotkey', action)
+function sendDictationAction(action: 'toggle' | 'start' | 'stop', mode: HotkeyMode = 'dictate') {
+    console.log(`[Hotkey] ${mode} ${action} @ ${Date.now()}`)
+    mainWindow?.webContents.send('dictation-hotkey', action, mode)
 }
 
-function onHotkeyPressed() {
+function onHotkeyPressed(accelerator: string, mode: HotkeyMode) {
     const pushToTalk = store.get('pushToTalk', false) as boolean
-    const vk = pushToTalk ? mainKeyVirtualCode(activeHotkey) : null
+    const vk = pushToTalk ? mainKeyVirtualCode(accelerator) : null
 
     // Push-to-talk needs a key we can poll for release; anything else behaves as a toggle.
     if (!pushToTalk || vk === null || isKeyDown(vk) === null) {
-        sendDictationAction('toggle')
+        sendDictationAction('toggle', mode)
         return
     }
 
     // Holding the keys makes the OS repeat the hotkey; only the first press starts recording.
     if (holdActive) return
     holdActive = true
-    sendDictationAction('start')
+    sendDictationAction('start', mode)
     holdTimer = setInterval(() => {
         if (isKeyDown(vk) === false) {
             if (holdTimer) clearInterval(holdTimer)
             holdTimer = null
             holdActive = false
-            sendDictationAction('stop')
+            sendDictationAction('stop', mode)
         }
     }, 25)
 }
 
-/** Registers the dictation hotkey. Returns false if the OS refused it (e.g. another app owns it). */
-function registerDictationHotkey(accelerator: string): boolean {
+function registerHotkey(accelerator: string, mode: HotkeyMode): boolean {
     try {
-        const ok = globalShortcut.register(accelerator, onHotkeyPressed)
-        if (ok) activeHotkey = accelerator
-        return ok
+        return globalShortcut.register(accelerator, () => onHotkeyPressed(accelerator, mode))
     } catch (e) {
         console.warn('Failed to register hotkey:', accelerator, e)
         return false
     }
+}
+
+/** Registers the dictation hotkey. Returns false if the OS refused it (e.g. another app owns it). */
+function registerDictationHotkey(accelerator: string): boolean {
+    const ok = registerHotkey(accelerator, 'dictate')
+    if (ok) activeHotkey = accelerator
+    return ok
+}
+
+/** Registers the voice-command hotkey ('off' disables it). False if it could not be registered. */
+function registerCommandHotkey(accelerator: string): boolean {
+    if (activeCommandHotkey) {
+        try { globalShortcut.unregister(activeCommandHotkey) } catch { }
+        activeCommandHotkey = ''
+    }
+    if (!accelerator || accelerator === 'off') return true
+    if (accelerator === activeHotkey) return false // already the dictation shortcut
+    const ok = registerHotkey(accelerator, 'command')
+    if (ok) activeCommandHotkey = accelerator
+    return ok
 }
 
 // Test mode: automated runs set WAVESCRIBE_TEST_DISPLAY_POINT (physical pixel "x,y") to a point on the
@@ -348,6 +372,10 @@ function createWindow() {
                 body: `Could not register "${hotkey}". Another app may be using it. Choose a different shortcut in Settings.`
             }).show()
         } catch (_) { }
+    }
+    // A taken voice-command shortcut is reported in Settings; dictation still works without it.
+    if (!registerCommandHotkey(store.get('commandHotkey', DEFAULT_COMMAND_HOTKEY) as string)) {
+        console.warn('[Hotkey] Voice-command shortcut unavailable')
     }
 
     // The caret indicator window (hidden until a dictation is being transcribed)
@@ -482,27 +510,6 @@ public class Kbd {
     });
 }
 
-/**
- * Copies everything on the clipboard (text, HTML, RTF, images, files...) into standalone items, so
- * it can be put back after a paste. Formats that cannot be read are skipped rather than failing.
- */
-async function snapshotClipboard(): Promise<ClipboardItem[]> {
-    try {
-        const items = await clipboard.read();
-        const copies = await Promise.all(items.map(async (item) => {
-            const entries = await Promise.all(item.types.map(async (type) => {
-                try { return [type, await item.getType(type)] as const; } catch { return null; }
-            }));
-            const readable = entries.filter((e): e is NonNullable<typeof e> => e !== null);
-            return readable.length ? new ClipboardItem(Object.fromEntries(readable)) : null;
-        }));
-        return copies.filter((c): c is ClipboardItem => c !== null);
-    } catch (err) {
-        console.warn('[InsertText] Could not read the clipboard:', err);
-        return [];
-    }
-}
-
 // IPC commands for text injection: set clipboard, send Ctrl+V, restore clipboard.
 ipcMain.handle('insert-text', async (event, text: string) => {
     // Debug/test switch: report success without touching the clipboard or the focused app.
@@ -551,15 +558,56 @@ ipcMain.handle('set-setting', (event, key, value) => {
             // Roll back to the previous hotkey so the user is not locked out
             console.warn(`[Hotkey] Failed to register "${value}". Reverting to "${previousHotkey}".`);
             registerDictationHotkey(previousHotkey);
+            reregisterCommandHotkey();
             return { success: false };
         }
+        reregisterCommandHotkey();
 
+        store.set(key, value);
+        return { success: true };
+    }
+
+    if (key === 'commandHotkey') {
+        const previous = store.get('commandHotkey', DEFAULT_COMMAND_HOTKEY) as string;
+        if (!registerCommandHotkey(value)) {
+            registerCommandHotkey(previous);
+            return { success: false };
+        }
         store.set(key, value);
         return { success: true };
     }
 
     store.set(key, value);
     return { success: true };
+});
+
+/** unregisterAll() also drops the command shortcut; put it back. */
+function reregisterCommandHotkey() {
+    activeCommandHotkey = '';
+    registerCommandHotkey(store.get('commandHotkey', DEFAULT_COMMAND_HOTKEY) as string);
+}
+
+ipcMain.handle('command-hotkey-state', () => {
+    const wanted = store.get('commandHotkey', DEFAULT_COMMAND_HOTKEY) as string;
+    return { hotkey: wanted, registered: wanted === 'off' || activeCommandHotkey === wanted };
+});
+
+ipcMain.handle('capture-selection', async () => {
+    if (process.env.WAVESCRIBE_NO_PASTE) return { text: '' };
+    try {
+        return { text: await captureSelection() };
+    } catch (err) {
+        console.warn('[Selection] Could not read the selection:', err);
+        return { text: '' };
+    }
+});
+
+ipcMain.handle('llm-voice-command', async (_event: any, instruction: string, selection: string) => {
+    try {
+        return { success: true, text: await runVoiceCommand(instruction, selection) };
+    } catch (err: any) {
+        return { success: false, error: err?.message || String(err) };
+    }
 });
 
 ipcMain.handle('check-hotkey', (event, hotkey) => {

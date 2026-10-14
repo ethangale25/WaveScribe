@@ -5,6 +5,7 @@ import { isFaithfulCleanup, isFaithfulSmartCleanup, wordChangeRatio } from '../e
 import { findQuietestCut, countSpeechWindows, applyVAD } from '../src/dsp';
 import { PhraseSegmenter } from '../src/segmenter';
 import { assessLlmFit, isChatOnly, recommendLlm } from '../src/llm-fit';
+import { commandUserMessage } from '../electron/cleanup-prompts';
 import { parseModelSort, parseParamCount, sortModels, DEFAULT_MODEL_SORT } from '../src/model-sort';
 
 const seg = (text: string, forcedCut = false) => ({ text, forcedCut });
@@ -367,4 +368,9 @@ test('smart cleanup check: rejects rewording, summaries and answers', () => {
     assert.equal(isFaithfulSmartCleanup('what time does the meeting start tomorrow', 'The meeting starts at 10 a.m. tomorrow.'), false);
     assert.equal(isFaithfulSmartCleanup('write a poem about the ocean', 'Waves roll in upon the shore, the ocean sings forevermore.'), false);
     assert.equal(isFaithfulSmartCleanup('hello there', ''), false);
+});
+
+test('voice command: the selection is sent fenced off from the instruction, and left out when empty', () => {
+    assert.equal(commandUserMessage('make this shorter', 'Some text.'), 'Instruction: make this shorter\n\nText:\n"""\nSome text.\n"""');
+    assert.equal(commandUserMessage('write a haiku', '  '), 'Instruction: write a haiku');
 });

@@ -37,6 +37,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     llmChatAbort: () => ipcRenderer.invoke('llm-chat-abort'),
     llmChatClear: () => ipcRenderer.invoke('llm-chat-clear'),
     llmChatSetModel: (modelId: string) => ipcRenderer.invoke('llm-chat-set-model', modelId),
+    llmChatSetThinking: (on: boolean) => ipcRenderer.invoke('llm-chat-set-thinking', on),
     llmChatLoad: () => ipcRenderer.invoke('llm-chat-load'),
     llmChatUnload: () => ipcRenderer.invoke('llm-chat-unload'),
     captureContext: () => ipcRenderer.invoke('capture-context'),
@@ -58,5 +59,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
         const handler = (_: any, token: string) => callback(token);
         ipcRenderer.on('llm-chat-token', handler);
         return () => { ipcRenderer.removeListener('llm-chat-token', handler); }
+    },
+    onLlmChatThought: (callback: (text: string) => void) => {
+        const handler = (_: any, text: string) => callback(text);
+        ipcRenderer.on('llm-chat-thought', handler);
+        return () => { ipcRenderer.removeListener('llm-chat-thought', handler); }
     },
 })

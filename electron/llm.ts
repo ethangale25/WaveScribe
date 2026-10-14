@@ -27,6 +27,8 @@ export interface ModelMetadata {
     activeParameters?: string
     /** No longer offered; listed only while still downloaded so it keeps working and can be removed. */
     retired?: boolean
+    /** 'optional': can reason step by step before answering, switchable in chat. 'always': cannot be switched off. */
+    thinking?: 'optional' | 'always'
 }
 
 export const OPEN_MODELS: ModelMetadata[] = [
@@ -89,7 +91,8 @@ export const OPEN_MODELS: ModelMetadata[] = [
         url: 'https://huggingface.co/bartowski/DeepSeek-R1-Distill-Qwen-1.5B-GGUF/resolve/main/DeepSeek-R1-Distill-Qwen-1.5B-Q4_K_M.gguf',
         tier: 'lightweight',
         description: 'DeepSeek’s breakthrough chain-of-thought reasoning distilled into 1.5B.',
-        retired: true
+        retired: true,
+        thinking: 'always'
     },
     {
         id: 'llama-3.2-3b',
@@ -225,7 +228,8 @@ export const OPEN_MODELS: ModelMetadata[] = [
         url: 'https://huggingface.co/bartowski/DeepSeek-R1-Distill-Qwen-7B-GGUF/resolve/main/DeepSeek-R1-Distill-Qwen-7B-Q4_K_M.gguf',
         tier: 'mid',
         description: 'DeepSeek R1 reasoning distilled into Qwen 7B architecture.',
-        retired: true
+        retired: true,
+        thinking: 'always'
     },
     {
         id: 'qwen-2.5-14b',
@@ -256,7 +260,8 @@ export const OPEN_MODELS: ModelMetadata[] = [
         url: 'https://huggingface.co/bartowski/DeepSeek-R1-Distill-Qwen-14B-GGUF/resolve/main/DeepSeek-R1-Distill-Qwen-14B-Q4_K_M.gguf',
         tier: 'frontier',
         description: 'Frontier reasoning model with deep chain-of-thought analysis for 16 GB machines.',
-        retired: true
+        retired: true,
+        thinking: 'always'
     },
     {
         id: 'phi-4-14b',
@@ -286,7 +291,8 @@ export const OPEN_MODELS: ModelMetadata[] = [
         filename: 'Qwen3.5-4B-Q4_K_M.gguf',
         url: 'https://huggingface.co/unsloth/Qwen3.5-4B-GGUF/resolve/main/Qwen3.5-4B-Q4_K_M.gguf',
         tier: 'lightweight',
-        description: 'Alibaba’s 2026 4B model. Among the strongest models of its size for chat, coding and reasoning.'
+        description: 'Alibaba’s 2026 4B model. Among the strongest models of its size for chat, coding and reasoning.',
+        thinking: 'optional'
     },
     {
         id: 'qwen3.5-9b',
@@ -301,7 +307,8 @@ export const OPEN_MODELS: ModelMetadata[] = [
         filename: 'Qwen3.5-9B-Q4_K_M.gguf',
         url: 'https://huggingface.co/unsloth/Qwen3.5-9B-GGUF/resolve/main/Qwen3.5-9B-Q4_K_M.gguf',
         tier: 'mid',
-        description: 'Alibaba’s 2026 9B model. One of the strongest open models under 10B parameters.'
+        description: 'Alibaba’s 2026 9B model. One of the strongest open models under 10B parameters.',
+        thinking: 'optional'
     },
     {
         id: 'gemma-4-e2b',
@@ -317,7 +324,8 @@ export const OPEN_MODELS: ModelMetadata[] = [
         filename: 'gemma-4-E2B-it-Q4_K_M.gguf',
         url: 'https://huggingface.co/unsloth/gemma-4-E2B-it-GGUF/resolve/main/gemma-4-E2B-it-Q4_K_M.gguf',
         tier: 'lightweight',
-        description: 'Google’s 2026 small model. 5.1B parameters in total but runs about as fast as a 2B model.'
+        description: 'Google’s 2026 small model. 5.1B parameters in total but runs about as fast as a 2B model.',
+        thinking: 'optional'
     },
     {
         id: 'gemma-4-e4b',
@@ -333,7 +341,8 @@ export const OPEN_MODELS: ModelMetadata[] = [
         filename: 'gemma-4-E4B-it-Q4_K_M.gguf',
         url: 'https://huggingface.co/unsloth/gemma-4-E4B-it-GGUF/resolve/main/gemma-4-E4B-it-Q4_K_M.gguf',
         tier: 'mid',
-        description: 'Google’s 2026 model for mid-range PCs. 8B parameters in total but runs about as fast as a 4B model.'
+        description: 'Google’s 2026 model for mid-range PCs. 8B parameters in total but runs about as fast as a 4B model.',
+        thinking: 'optional'
     },
     {
         id: 'gemma-4-26b-a4b',
@@ -349,7 +358,8 @@ export const OPEN_MODELS: ModelMetadata[] = [
         filename: 'gemma-4-26B-A4B-it-UD-Q4_K_M.gguf',
         url: 'https://huggingface.co/unsloth/gemma-4-26B-A4B-it-GGUF/resolve/main/gemma-4-26B-A4B-it-UD-Q4_K_M.gguf',
         tier: 'frontier',
-        description: 'Google’s 2026 mixture-of-experts model for 32 GB PCs: 26B parameters, of which about 4B work on each word, so it answers quickly for its size.'
+        description: 'Google’s 2026 mixture-of-experts model for 32 GB PCs: 26B parameters, of which about 4B work on each word, so it answers quickly for its size.',
+        thinking: 'optional'
     }
 ]
 
@@ -827,7 +837,7 @@ const REFORMAT_MAX_INPUT_CHARS = 5000
 
 /** Reasoning models write chain-of-thought into their output; unusable for in-place cleanup. */
 function isReasoningModel(): boolean {
-    return activeModelId.startsWith('deepseek-r1')
+    return OPEN_MODELS.find(m => m.id === activeModelId)?.thinking === 'always'
 }
 
 async function ensureCleanupSequence(): Promise<any> {
@@ -869,6 +879,8 @@ async function reformatTextNow(rawText: string, surroundingContext?: string): Pr
         const seq = await ensureCleanupSequence()
         session = new LlamaChatSession({
             contextSequence: seq,
+            // Cleanup must answer within a second or two, so models that can think never do here.
+            chatWrapper: await chatWrapperFor(model, activeModelId, false),
             systemPrompt: buildSystemPrompt(surroundingContext)
         })
 
@@ -977,10 +989,46 @@ export function unloadChatModel(): void {
     chatError = ''
 }
 
+// Whether chat models that can think before answering should. Off by default: thinking makes
+// replies much slower, which most chat does not need.
+let chatThinking = false
+
+export function setChatThinking(on: boolean): void {
+    if (on === chatThinking) return
+    chatThinking = on
+    // The setting is part of the session's prompt format; the next message starts a new session
+    // and replays the conversation into it.
+    abortChat()
+    try { activeChatSession?.dispose() } catch { }
+    activeChatSession = null
+}
+
+export function getChatThinking(): boolean {
+    return chatThinking
+}
+
+/**
+ * A chat wrapper with thinking switched on or off, for models where that is optional. Covers the
+ * built-in Qwen3.5 and Gemma 4 wrappers and, should the model's own template be used instead, the
+ * enable_thinking flag those templates read. Other models keep the wrapper node-llama-cpp picks.
+ */
+async function chatWrapperFor(llamaModel: any, modelId: string, thinking: boolean): Promise<any> {
+    if (OPEN_MODELS.find(m => m.id === modelId)?.thinking !== 'optional') return 'auto'
+    const { resolveChatWrapper } = await import('node-llama-cpp')
+    return resolveChatWrapper(llamaModel, {
+        customWrapperSettings: {
+            qwen: { thoughts: thinking ? 'auto' : 'discourage' },
+            gemma4: { reasoning: thinking },
+            jinjaTemplate: { additionalRenderParameters: { enable_thinking: thinking } }
+        }
+    })
+}
+
 export async function chatStream(
     messages: { role: 'user' | 'assistant' | 'system'; content: string }[],
     onToken: (token: string) => void,
-    signal?: { aborted: boolean }
+    signal?: { aborted: boolean },
+    onThought?: (text: string) => void
 ): Promise<string> {
     await loadChatModel()
 
@@ -989,6 +1037,7 @@ export async function chatStream(
     if (!activeChatSession) {
         activeChatSession = new LlamaChatSession({
             contextSequence: chatCtx.getSequence(),
+            chatWrapper: await chatWrapperFor(chatCtx.model, chatModelId, chatThinking),
             systemPrompt: CHAT_SYSTEM_PROMPT,
             // The chat context has one sequence; it must be freed when Clear disposes the session.
             autoDisposeSequence: true
@@ -1021,6 +1070,10 @@ export async function chatStream(
                 if (signal?.aborted || activeChatAbortController?.signal.aborted) return
                 fullResponse += chunk
                 onToken(chunk)
+            },
+            // The reasoning before the answer arrives as thought segments, separate from the reply.
+            onResponseChunk: (chunk: any) => {
+                if (chunk.type === 'segment' && chunk.segmentType === 'thought' && chunk.text) onThought?.(chunk.text)
             }
         })
     } catch (err: any) {

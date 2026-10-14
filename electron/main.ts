@@ -22,6 +22,7 @@ import {
     migrateRenamedModelFiles,
     cancelDownload,
     setChatModel,
+    setChatThinking,
     loadChatModel,
     unloadChatModel,
     getCleanupModelId,
@@ -416,6 +417,7 @@ app.whenReady().then(async () => {
     // Before chat had its own model, the chat picker set llmModelId; carry that choice over.
     const savedChat = (store.get('chatModelId') as string | undefined) ?? savedLlm
     if (savedChat) setChatModel(savedChat)
+    setChatThinking(store.get('chatThinking', false) === true)
     const aiEnabled = store.get('aiReformat', false)
     if (aiEnabled && isModelDownloaded(getCleanupModelId())) {
         try {
@@ -787,7 +789,10 @@ ipcMain.handle('llm-chat-send', async (_event: any, { messages }: { messages: { 
             (token: string) => {
                 mainWindow?.webContents.send('llm-chat-token', token);
             },
-            activeChatAbortSignal
+            activeChatAbortSignal,
+            (thought: string) => {
+                mainWindow?.webContents.send('llm-chat-thought', thought);
+            }
         );
         return { success: true, text: fullResponse };
     } catch (err: any) {
@@ -803,6 +808,12 @@ ipcMain.handle('llm-chat-abort', () => {
 
 ipcMain.handle('llm-chat-clear', () => {
     clearChat();
+    return { success: true };
+});
+
+ipcMain.handle('llm-chat-set-thinking', (_event, on: boolean) => {
+    setChatThinking(on === true);
+    store.set('chatThinking', on === true);
     return { success: true };
 });
 

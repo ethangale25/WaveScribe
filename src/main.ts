@@ -78,6 +78,7 @@ declare global {
         description: string
         activeParameters?: string
         retired?: boolean
+        thinking?: 'optional' | 'always'
         isDownloaded: boolean
         downloadProgress: number
         isActive: boolean
@@ -103,6 +104,8 @@ declare global {
       showNotification: (title: string, body: string) => Promise<{ success: boolean }>
       onLlmDownloadProgress: (callback: (progress: { modelId: string; percent: number; loadedBytes: number; totalBytes: number; phase?: 'downloading' | 'verifying' }) => void) => () => void
       onLlmChatToken: (callback: (token: string) => void) => () => void
+      onLlmChatThought: (callback: (text: string) => void) => () => void
+      llmChatSetThinking: (on: boolean) => Promise<{ success: boolean }>
     }
   }
 }
@@ -262,6 +265,10 @@ if (appElement) {
               <span class="status-indicator green" id="chat-active-model-dot"></span>
               <span id="chat-active-model-name">Loading...</span>
               <span class="pill-caret">${icon('chevronDown')}</span>
+            </button>
+            <button class="chat-think-toggle" id="btn-chat-thinking" aria-pressed="false" style="display: none;"
+              title="Let the model reason step by step before it answers. Slower, but better on hard questions.">
+              <span class="chat-think-switch"></span> Thinking
             </button>
           </div>
           <div style="display: flex; align-items: center; gap: 6px;">
@@ -2388,6 +2395,7 @@ if (appElement) {
   const chatActiveModelDot = document.getElementById('chat-active-model-dot');
   const chatHwBadge = document.getElementById('chat-hw-badge');
   const btnChatClear = document.getElementById('btn-chat-clear');
+  const btnChatThinking = document.getElementById('btn-chat-thinking') as HTMLButtonElement | null;
   const chatMessagesContainer = document.getElementById('chat-messages');
   const chatWelcome = document.getElementById('chat-welcome');
   const chatInputTextarea = document.getElementById('chat-input-textarea') as HTMLTextAreaElement;
@@ -2419,6 +2427,10 @@ if (appElement) {
   let currentActiveAssistantBubbleContent: HTMLElement | null = null;
   let streamingReplyText = '';
   let streamingRenderPending = false;
+  // The model's reasoning for the reply being streamed, shown in a collapsible section above it.
+  let streamingThoughtEl: HTMLDetailsElement | null = null;
+  let streamingThoughtText = '';
+  let chatThinkingOn: boolean | null = null;
   let chatModelDisplayName = 'AI';
   let chatUnloadTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -2455,6 +2467,13 @@ if (appElement) {
   btnOpenChat?.addEventListener('click', switchToChatView);
   btnChatBack?.addEventListener('click', switchToDictationView);
 
+  btnChatThinking?.addEventListener('click', async () => {
+    if (isGeneratingChat) return; // switching restarts the session; wait for the reply to finish
+    chatThinkingOn = !chatThinkingOn;
+    await window.electronAPI.llmChatSetThinking(chatThinkingOn);
+    await refreshActiveChatModelUI();
+  });
+
   const refreshHardwareSpecs = async () => {
     if (!window.electronAPI || !chatHwBadge) return;
     try {
@@ -2473,6 +2492,13 @@ if (appElement) {
       const catalog = await window.electronAPI.llmGetCatalog();
       const chosen = catalog.find(m => m.id === s.chatModelId);
       chatModelDisplayName = chosen?.name || 'AI';
+
+      if (chatThinkingOn === null) chatThinkingOn = (await window.electronAPI.getSettings())?.chatThinking === true;
+      if (btnChatThinking) {
+        btnChatThinking.style.display = chosen?.thinking === 'optional' ? '' : 'none';
+        btnChatThinking.setAttribute('aria-pressed', String(chatThinkingOn));
+        btnChatThinking.classList.toggle('is-on', chatThinkingOn);
+      }
 
       if (chatActiveModelName) {
         chatActiveModelName.textContent = !chosen ? 'Choose a model'
@@ -2605,7 +2631,8 @@ if (appElement) {
     const rows = models.map(m => {
       const f = assessLlmFit(m, purpose, mem);
       return {
-        id: m.id, name: m.name, tip: m.description, fit: f.fit, extra: null,
+        id: m.id, name: m.name, tip: m.description, fit: f.fit,
+        extra: purpose !== 'chat' ? null : m.thinking === 'optional' ? 'Can think before answering' : m.thinking === 'always' ? 'Always thinks first' : null,
         gpuNote: f.fitsOnGpu === null ? null : f.fitsOnGpu ? { text: 'Fits in graphics memory', ok: true } : { text: 'Not enough graphics memory', ok: false },
         isDownloaded: m.isDownloaded,
         downloadProgress: status.activeDownloadModelId === m.id ? m.downloadProgress : null,
@@ -2816,11 +2843,27 @@ if (appElement) {
       window.electronAPI.llmCancelDownload();
     });
 
+    window.electronAPI.onLlmChatThought((text: string) => {
+      if (!currentActiveAssistantBubbleContent) return;
+      if (!streamingThoughtEl) {
+        streamingThoughtEl = document.createElement('details');
+        streamingThoughtEl.className = 'chat-thought';
+        streamingThoughtEl.open = true;
+        streamingThoughtEl.innerHTML = '<summary>Thinking…</summary><div class="chat-thought-body"></div>';
+        currentActiveAssistantBubbleContent.before(streamingThoughtEl);
+      }
+      streamingThoughtText += text;
+      const body = streamingThoughtEl.querySelector('.chat-thought-body');
+      if (body) body.textContent = streamingThoughtText;
+      if (chatMessagesContainer) chatMessagesContainer.scrollTop = chatMessagesContainer.scrollHeight;
+    });
+
     // Real-time Chat Token Streaming listener
     // Tokens arrive faster than the screen refreshes; render the Markdown at most once per frame.
     window.electronAPI.onLlmChatToken((token: string) => {
       if (!currentActiveAssistantBubbleContent) return;
       streamingReplyText += token;
+      endThoughtSection();
       if (streamingRenderPending) return;
       streamingRenderPending = true;
       requestAnimationFrame(() => {
@@ -2833,6 +2876,15 @@ if (appElement) {
       });
     });
   }
+
+  /** The answer has started (or the reply ended): fold the reasoning away under a short label. */
+  const endThoughtSection = () => {
+    if (!streamingThoughtEl || streamingThoughtEl.dataset.done) return;
+    streamingThoughtEl.dataset.done = '1';
+    streamingThoughtEl.open = false;
+    const summary = streamingThoughtEl.querySelector('summary');
+    if (summary) summary.textContent = 'Thought process';
+  };
 
   // Format and append chat messages
   const appendChatMessage = (role: 'user' | 'assistant', content: string) => {
@@ -2944,6 +2996,8 @@ if (appElement) {
 
     // Append placeholder Assistant Message
     streamingReplyText = '';
+    streamingThoughtText = '';
+    streamingThoughtEl = null;
     const assistantBubble = appendChatMessage('assistant', '');
     void refreshActiveChatModelUI();
 
@@ -2967,6 +3021,8 @@ if (appElement) {
       btnChatSend.innerHTML = icon('arrowUp', 20);
       btnChatSend.title = 'Send message (Enter)';
       btnChatSend.disabled = false;
+      endThoughtSection();
+      streamingThoughtEl = null;
       currentActiveAssistantBubbleContent = null;
       void refreshActiveChatModelUI();
     }

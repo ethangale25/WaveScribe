@@ -7,6 +7,8 @@ export type LlmFit = 'great' | 'slow' | 'too-big';
 export interface LlmModelInfo {
   id: string;
   parameters: string; // e.g. "3.8B"
+  /** Set when fewer parameters work per token than the total; that is what sets the speed. */
+  activeParameters?: string;
   approxBytes: number;
 }
 
@@ -40,14 +42,29 @@ const RAM_HEADROOM = 0.85;
 // Best first. Reasoning (DeepSeek R1) models are left out: they think out loud before answering,
 // which is slow for chat and unusable for cleanup.
 const CHAT_RANKING = [
-  'qwen-2.5-14b', 'phi-4-14b', 'gemma-2-9b-q6', 'gemma-2-9b', 'llama-3.1-8b', 'qwen-2.5-7b',
-  'qwen3-4b-instruct', 'phi-4-mini', 'llama-3.2-3b', 'gemma-2-2b-q8', 'gemma-2-2b', 'qwen-2.5-1.5b', 'llama-3.2-1b',
+  'gemma-4-26b-a4b', 'qwen3.5-9b', 'qwen-2.5-14b', 'phi-4-14b', 'gemma-4-e4b', 'gemma-2-9b-q6', 'gemma-2-9b',
+  'llama-3.1-8b', 'qwen-2.5-7b', 'qwen3.5-4b', 'qwen3-4b-instruct', 'gemma-4-e2b', 'phi-4-mini', 'llama-3.2-3b',
+  'gemma-2-2b-q8', 'gemma-2-2b', 'qwen-2.5-1.5b', 'llama-3.2-1b',
 ];
 // Cleanup must keep every word and finish within a second or two, so bigger is not better here.
 const CLEANUP_RANKING = ['qwen3-4b-instruct', 'qwen-2.5-1.5b', 'llama-3.2-1b'];
 
+// Newer models not yet through the dictation-cleanup eval (tools/eval). Small models often reword
+// dictations, so each one is offered for chat only until it has shown it keeps every word.
+const UNTESTED_FOR_CLEANUP = new Set(['qwen3.5-4b', 'qwen3.5-9b', 'gemma-4-e2b', 'gemma-4-e4b', 'gemma-4-26b-a4b']);
+
 export function isReasoningModel(id: string): boolean {
   return id.startsWith('deepseek-r1');
+}
+
+/** Models offered for chat but not for dictation cleanup. */
+export function isChatOnly(id: string): boolean {
+  return isReasoningModel(id) || UNTESTED_FOR_CLEANUP.has(id);
+}
+
+/** On the processor alone, models up to ~4B (working per token) answer at a comfortable reading speed. */
+function runsFastOnCpu(model: LlmModelInfo): boolean {
+  return parseFloat(model.activeParameters ?? model.parameters) <= 4;
 }
 
 /** Memory a model needs: its weights plus the 4K-token context and runtime overhead. */
@@ -61,7 +78,7 @@ export function assessLlmFit(model: LlmModelInfo, purpose: LlmPurpose, mem: Memo
   // Already loaded (for this job or the other one): it is shared, so nothing more is needed.
   const already = mem.loaded.find(l => l.id === model.id);
   if (already) {
-    const fit = already.onGpu || parseFloat(model.parameters) <= 4 ? 'great' : 'slow';
+    const fit = already.onGpu || runsFastOnCpu(model) ? 'great' : 'slow';
     return { fit, fitsOnGpu: mem.freeVramGb === null ? null : already.onGpu, memoryGb };
   }
 
@@ -74,8 +91,7 @@ export function assessLlmFit(model: LlmModelInfo, purpose: LlmPurpose, mem: Memo
   let fit: LlmFit;
   if (fitsOnGpu) fit = 'great';
   else if (memoryGb > ram * RAM_HEADROOM) fit = 'too-big';
-  // On the processor alone, models up to ~4B still answer at a comfortable reading speed.
-  else fit = parseFloat(model.parameters) <= 4 ? 'great' : 'slow';
+  else fit = runsFastOnCpu(model) ? 'great' : 'slow';
 
   return { fit, fitsOnGpu, memoryGb };
 }

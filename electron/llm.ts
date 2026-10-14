@@ -23,6 +23,10 @@ export interface ModelMetadata {
     url: string
     tier: 'lightweight' | 'mid' | 'frontier'
     description: string
+    /** Parameters doing the work per token when fewer than the total (mixture-of-experts, Gemma 4 "E" sizes). */
+    activeParameters?: string
+    /** No longer offered; listed only while still downloaded so it keeps working and can be removed. */
+    retired?: boolean
 }
 
 export const OPEN_MODELS: ModelMetadata[] = [
@@ -84,7 +88,8 @@ export const OPEN_MODELS: ModelMetadata[] = [
         filename: 'DeepSeek-R1-Distill-Qwen-1.5B-Q4_K_M.gguf',
         url: 'https://huggingface.co/bartowski/DeepSeek-R1-Distill-Qwen-1.5B-GGUF/resolve/main/DeepSeek-R1-Distill-Qwen-1.5B-Q4_K_M.gguf',
         tier: 'lightweight',
-        description: 'DeepSeek’s breakthrough chain-of-thought reasoning distilled into 1.5B.'
+        description: 'DeepSeek’s breakthrough chain-of-thought reasoning distilled into 1.5B.',
+        retired: true
     },
     {
         id: 'llama-3.2-3b',
@@ -219,7 +224,8 @@ export const OPEN_MODELS: ModelMetadata[] = [
         filename: 'DeepSeek-R1-Distill-Qwen-7B-Q4_K_M.gguf',
         url: 'https://huggingface.co/bartowski/DeepSeek-R1-Distill-Qwen-7B-GGUF/resolve/main/DeepSeek-R1-Distill-Qwen-7B-Q4_K_M.gguf',
         tier: 'mid',
-        description: 'DeepSeek R1 reasoning distilled into Qwen 7B architecture.'
+        description: 'DeepSeek R1 reasoning distilled into Qwen 7B architecture.',
+        retired: true
     },
     {
         id: 'qwen-2.5-14b',
@@ -249,7 +255,8 @@ export const OPEN_MODELS: ModelMetadata[] = [
         filename: 'DeepSeek-R1-Distill-Qwen-14B-Q4_K_M.gguf',
         url: 'https://huggingface.co/bartowski/DeepSeek-R1-Distill-Qwen-14B-GGUF/resolve/main/DeepSeek-R1-Distill-Qwen-14B-Q4_K_M.gguf',
         tier: 'frontier',
-        description: 'Frontier reasoning model with deep chain-of-thought analysis for 16 GB machines.'
+        description: 'Frontier reasoning model with deep chain-of-thought analysis for 16 GB machines.',
+        retired: true
     },
     {
         id: 'phi-4-14b',
@@ -265,6 +272,84 @@ export const OPEN_MODELS: ModelMetadata[] = [
         url: 'https://huggingface.co/bartowski/phi-4-GGUF/resolve/main/phi-4-Q4_K_M.gguf',
         tier: 'frontier',
         description: 'Microsoft’s flagship 14B synthetic reasoning model. High density performance.'
+    },
+    {
+        id: 'qwen3.5-4b',
+        name: 'Qwen3.5 4B',
+        parameters: '4B',
+        released: '2026-03-02',
+        quant: 'Q4_K_M',
+        sizeText: '~2.7 GB',
+        approxBytes: 2613 * 1024 * 1024,
+        ramNeededText: '~3.8 GB RAM',
+        minTotalRamGb: 8,
+        filename: 'Qwen3.5-4B-Q4_K_M.gguf',
+        url: 'https://huggingface.co/unsloth/Qwen3.5-4B-GGUF/resolve/main/Qwen3.5-4B-Q4_K_M.gguf',
+        tier: 'lightweight',
+        description: 'Alibaba’s 2026 4B model. Among the strongest models of its size for chat, coding and reasoning.'
+    },
+    {
+        id: 'qwen3.5-9b',
+        name: 'Qwen3.5 9B',
+        parameters: '9B',
+        released: '2026-03-02',
+        quant: 'Q4_K_M',
+        sizeText: '~5.7 GB',
+        approxBytes: 5417 * 1024 * 1024,
+        ramNeededText: '~6.8 GB RAM',
+        minTotalRamGb: 12,
+        filename: 'Qwen3.5-9B-Q4_K_M.gguf',
+        url: 'https://huggingface.co/unsloth/Qwen3.5-9B-GGUF/resolve/main/Qwen3.5-9B-Q4_K_M.gguf',
+        tier: 'mid',
+        description: 'Alibaba’s 2026 9B model. One of the strongest open models under 10B parameters.'
+    },
+    {
+        id: 'gemma-4-e2b',
+        name: 'Gemma 4 E2B',
+        parameters: '5.1B',
+        activeParameters: '2.3B',
+        released: '2026-04-02',
+        quant: 'Q4_K_M',
+        sizeText: '~3.1 GB',
+        approxBytes: 2966 * 1024 * 1024,
+        ramNeededText: '~4.0 GB RAM',
+        minTotalRamGb: 6,
+        filename: 'gemma-4-E2B-it-Q4_K_M.gguf',
+        url: 'https://huggingface.co/unsloth/gemma-4-E2B-it-GGUF/resolve/main/gemma-4-E2B-it-Q4_K_M.gguf',
+        tier: 'lightweight',
+        description: 'Google’s 2026 small model. 5.1B parameters in total but runs about as fast as a 2B model.'
+    },
+    {
+        id: 'gemma-4-e4b',
+        name: 'Gemma 4 E4B',
+        parameters: '8B',
+        activeParameters: '4.5B',
+        released: '2026-04-02',
+        quant: 'Q4_K_M',
+        sizeText: '~5.0 GB',
+        approxBytes: 4749 * 1024 * 1024,
+        ramNeededText: '~6.0 GB RAM',
+        minTotalRamGb: 12,
+        filename: 'gemma-4-E4B-it-Q4_K_M.gguf',
+        url: 'https://huggingface.co/unsloth/gemma-4-E4B-it-GGUF/resolve/main/gemma-4-E4B-it-Q4_K_M.gguf',
+        tier: 'mid',
+        description: 'Google’s 2026 model for mid-range PCs. 8B parameters in total but runs about as fast as a 4B model.'
+    },
+    {
+        id: 'gemma-4-26b-a4b',
+        name: 'Gemma 4 26B A4B',
+        parameters: '26B',
+        activeParameters: '3.8B',
+        released: '2026-04-02',
+        quant: 'UD-Q4_K_M',
+        sizeText: '~17 GB',
+        approxBytes: 16165 * 1024 * 1024,
+        ramNeededText: '~18 GB RAM',
+        minTotalRamGb: 24,
+        filename: 'gemma-4-26B-A4B-it-UD-Q4_K_M.gguf',
+        url: 'https://huggingface.co/unsloth/gemma-4-26B-A4B-it-GGUF/resolve/main/gemma-4-26B-A4B-it-UD-Q4_K_M.gguf',
+        tier: 'frontier',
+        description: 'Google’s 2026 mixture-of-experts model for 32 GB PCs: 26B parameters, of which about 4B work on each word, so it answers quickly for its size.'
     }
 ]
 
@@ -372,7 +457,7 @@ export function isModelDownloaded(modelIdOrFilename: string): boolean {
 
 export function getModelCatalog(hardware?: HardwareProfile): ModelCatalogItem[] {
     const hw = hardware || detectHardware()
-    return OPEN_MODELS.map(m => {
+    return OPEN_MODELS.filter(m => !m.retired || isModelDownloaded(m.id)).map(m => {
         const downloaded = isModelDownloaded(m.id)
         const isCompatible = hw.totalRamGb >= m.minTotalRamGb
         let compatibilityReason = `Requires ~${m.minTotalRamGb} GB RAM (Your PC: ${hw.totalRamGb} GB)`

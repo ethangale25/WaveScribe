@@ -4,7 +4,7 @@ import { stitchSegments } from '../src/stitch';
 import { isFaithfulCleanup, wordChangeRatio } from '../electron/fidelity';
 import { findQuietestCut, countSpeechWindows, applyVAD } from '../src/dsp';
 import { PhraseSegmenter } from '../src/segmenter';
-import { assessLlmFit, recommendLlm } from '../src/llm-fit';
+import { assessLlmFit, isChatOnly, recommendLlm } from '../src/llm-fit';
 import { parseModelSort, parseParamCount, sortModels, DEFAULT_MODEL_SORT } from '../src/model-sort';
 
 const seg = (text: string, forcedCut = false) => ({ text, forcedCut });
@@ -279,6 +279,23 @@ test('llm recommend: chat gets the biggest model that runs great, never a reason
 
 test('llm recommend: cleanup sticks to the tested small model even on a big GPU', () => {
     assert.equal(recommendLlm('cleanup', LLMS, free(40, 22)), 'qwen3-4b-instruct');
+});
+
+test('llm fit: speed on the processor follows the parameters working per token', () => {
+    // Gemma 4 26B A4B: 26B in total, ~4B per token, so it answers quickly once it fits in memory.
+    const moe = { ...llm('gemma-4-26b-a4b', '26B', 15.8), activeParameters: '3.8B' };
+    assert.equal(assessLlmFit(moe, 'chat', free(32, null)).fit, 'great');
+    assert.equal(assessLlmFit(moe, 'chat', free(12, null)).fit, 'too-big');
+});
+
+test('llm recommend: newer models stay out of cleanup until they pass the cleanup eval', () => {
+    for (const id of ['qwen3.5-4b', 'qwen3.5-9b', 'gemma-4-e2b', 'gemma-4-e4b', 'gemma-4-26b-a4b', 'deepseek-r1-7b']) {
+        assert.equal(isChatOnly(id), true, id);
+    }
+    assert.equal(isChatOnly('qwen3-4b-instruct'), false);
+    const withNew = [...LLMS, llm('qwen3.5-9b', '9B', 5.3), llm('qwen3.5-4b', '4B', 2.6)];
+    assert.equal(recommendLlm('chat', withNew, free(40, 22)), 'qwen3.5-9b');
+    assert.equal(recommendLlm('cleanup', withNew, free(40, 22)), 'qwen3-4b-instruct');
 });
 
 const sortRow = (id: string, over: Partial<{ name: string; params: number; bytes: number; released: string; fit: 'great' | 'slow' | 'too-big'; rank: number }> = {}) =>

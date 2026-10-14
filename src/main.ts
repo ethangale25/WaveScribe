@@ -8,7 +8,7 @@ import { DEFAULT_SORT_DIR, MODEL_SORT_LABELS, parseModelSort, parseParamCount, s
 import { escapeHtml, removeFillers, applyDictionary, applyAutoFormatting, countWords } from './postprocess';
 import { loadModel, transcribeAudio, isModelLoaded, getCurrentDevice, StreamingTranscriptionSession } from './transcribe';
 import { initDiagnostics } from './diagnostics';
-import { assessLlmFit, assessSpeechFit, fitLabel, isReasoningModel, rankFor, recommendLlm, LlmFit, LlmPurpose, MemorySnapshot } from './llm-fit';
+import { assessLlmFit, assessSpeechFit, fitLabel, isChatOnly, rankFor, recommendLlm, LlmFit, LlmPurpose, MemorySnapshot } from './llm-fit';
 import { renderChatMarkdown } from './chat-markdown';
 import { icon, TITLEBAR } from './icons';
 // @ts-ignore
@@ -76,6 +76,8 @@ declare global {
         url: string
         tier: 'lightweight' | 'mid' | 'frontier'
         description: string
+        activeParameters?: string
+        retired?: boolean
         isDownloaded: boolean
         downloadProgress: number
         isActive: boolean
@@ -2566,6 +2568,7 @@ if (appElement) {
     sizeText: string;
     removable: boolean;
     rank: number;
+    /** e.g. "26B parameters (3.8B active)". */
     paramsText: string;
     params: number;
     bytes: number;
@@ -2589,7 +2592,7 @@ if (appElement) {
         isDownloaded: await isHfModelDownloaded(id),
         downloadProgress: speechDownload?.modelId === id ? speechDownload.percent : null,
         sizeText: MODEL_DETAILS[id]?.sizeText || '', removable: false, rank,
-        paramsText: MODEL_DETAILS[id]?.params || '', params: parseParamCount(MODEL_DETAILS[id]?.params || ''),
+        paramsText: MODEL_DETAILS[id]?.params ? `${MODEL_DETAILS[id].params} parameters` : '', params: parseParamCount(MODEL_DETAILS[id]?.params || ''),
         bytes: MODEL_DETAILS[id]?.approxBytes ?? 0, released: MODEL_DETAILS[id]?.released || '',
       };
     }));
@@ -2598,7 +2601,7 @@ if (appElement) {
 
   const llmRows = async (purpose: LlmPurpose, mem: MemorySnapshot): Promise<{ rows: PickerRow[]; selectedId: string; recommendedId: string | null }> => {
     const [catalog, status] = await Promise.all([window.electronAPI.llmGetCatalog(), window.electronAPI.llmStatus()]);
-    const models = catalog.filter(m => purpose === 'chat' || !isReasoningModel(m.id));
+    const models = catalog.filter(m => purpose === 'chat' || !isChatOnly(m.id));
     const rows = models.map(m => {
       const f = assessLlmFit(m, purpose, mem);
       return {
@@ -2607,7 +2610,7 @@ if (appElement) {
         isDownloaded: m.isDownloaded,
         downloadProgress: status.activeDownloadModelId === m.id ? m.downloadProgress : null,
         sizeText: m.sizeText.replace('~', ''), removable: m.isDownloaded, rank: rankFor(purpose, m.id),
-        paramsText: m.parameters, params: parseParamCount(m.parameters), bytes: m.approxBytes, released: m.released,
+        paramsText: `${m.parameters} parameters${m.activeParameters ? ` (${m.activeParameters} active)` : ''}`, params: parseParamCount(m.parameters), bytes: m.approxBytes, released: m.released,
       };
     });
     return {
@@ -2687,7 +2690,7 @@ if (appElement) {
         const gpuFact = r.gpuNote ? `<span class="pick-fact ${r.gpuNote.ok ? 'gpu-yes' : 'gpu-no'}">${r.gpuNote.text}</span>` : '';
         const label = purpose === 'speech' && r.fit === 'slow' ? 'Slow on this PC' : fitLabel(r.fit);
         // Whatever the list is sorted by is shown on every row, so the order makes sense at a glance.
-        const sortFact = sort.key === 'params' && r.paramsText ? `${r.paramsText} parameters`
+        const sortFact = sort.key === 'params' ? r.paramsText
           : sort.key === 'released' && r.released ? `Released ${formatReleased(r.released)}`
           : sort.key === 'size' && r.isDownloaded ? `${r.sizeText} download`
           : '';

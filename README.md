@@ -32,7 +32,7 @@
 
 ## How it works
 
-1. Click into any text field and press **Ctrl + Shift + Space**.
+1. Click into any text field and press **Alt + W**.
 2. Talk. A small WaveScribe indicator appears next to your text cursor, moving with your voice.
 3. Press the shortcut again. Your words appear right where you were typing, punctuated and cleaned up.
 
@@ -49,7 +49,7 @@ Prefer to hold a key while you speak? Turn on **Push to talk** in Settings.
 - **Clean text:** filler words (um, uh) removed, sentences capitalized and punctuated.
 - **Custom words** to fix names and terms it mishears (for example "gooey" → "GUI").
 - **Optional AI cleanup:** a local language model polishes punctuation without rewriting what you said. Or choose **Smart edit**: it also drops self-corrections ("Tuesday, no wait, Wednesday") and false starts, turns spoken lists into lists, and understands "new paragraph" and "scratch that".
-- **Voice commands:** select text in any app, press **Ctrl + Alt + Space** and say what to change ("make this more formal", "turn this into bullet points", "translate to Spanish"). The selection is replaced with the result. With nothing selected, it writes what you ask for.
+- **Voice commands:** select text in any app, press **Alt + Shift + W** and say what to change ("make this more formal", "turn this into bullet points", "translate to Spanish"). The selection is replaced with the result. With nothing selected, it writes what you ask for.
 - **Mini mode:** shrink WaveScribe to a small pill that floats above your work and shows when it is listening.
 - **History and stats:** your last dictations, words dictated and time saved.
 
@@ -83,7 +83,7 @@ WaveScribe checks for new versions on its own and downloads them in the backgrou
 
 1. Download **WaveScribe-Setup-*version*.exe** from the [latest release](https://github.com/ethangale25/WaveScribe/releases/latest).
 2. Run it. Windows may show a SmartScreen notice for new apps; choose **More info → Run anyway**.
-3. Open WaveScribe and press **Ctrl + Shift + Space** in any app to start dictating. The voice model downloads on first use (40–750 MB depending on the model).
+3. Open WaveScribe and press **Alt + W** in any app to start dictating. The voice model downloads on first use (40–750 MB depending on the model).
 
 **System requirements:** Windows 10 or 11 (64-bit). 8 GB of RAM is recommended; the AI features need more for larger models. A graphics card is optional: it speeds up the larger models, and WaveScribe only recommends what fits.
 
@@ -94,9 +94,9 @@ Your audio and text stay on your PC. WaveScribe connects to the internet only to
 
 | Shortcut | Action |
 | --- | --- |
-| `Ctrl + Shift + Space` | Start or stop dictating (change it in Settings) |
+| `Alt + W` | Start or stop dictating (change it in Settings) |
 | Hold the shortcut | Push to talk, when enabled in Settings |
-| `Ctrl + Alt + Space` | Voice command on the selected text (change or turn off in Settings) |
+| `Alt + Shift + W` | Voice command on the selected text (change or turn off in Settings) |
 | `Enter` / `Shift + Enter` | Send a chat message / new line |
 
 ---

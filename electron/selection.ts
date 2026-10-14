@@ -15,11 +15,11 @@ const MODIFIERS = [VK_SHIFT, VK_CONTROL, VK_MENU, VK_LWIN, VK_RWIN]
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms))
 
 /**
- * Waits for the shortcut's keys to be let go. Ctrl+C sent while Shift or Alt is still held is a
- * different shortcut (Ctrl+Shift+C opens developer tools in browsers). If they are still down after
- * a moment, they are released synthetically.
+ * Waits for the shortcut's keys to be let go. Ctrl+C or Ctrl+V sent while Shift or Alt is still
+ * held is a different shortcut (Ctrl+Shift+C opens developer tools in browsers, Ctrl+Alt+V opens
+ * Paste Special in Office). If they are still down after a moment, they are released synthetically.
  */
-async function waitForModifiersReleased(): Promise<void> {
+export async function waitForModifiersReleased(): Promise<void> {
     for (let waited = 0; waited < 600; waited += 20) {
         if (!MODIFIERS.some(vk => isKeyDown(vk))) return
         await sleep(20)

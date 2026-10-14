@@ -33,7 +33,7 @@ import { captureContext } from './context-capture'
 import { locateCaret, warmUpCaretLocator, stopCaretLocator, CaretRect } from './caret'
 import { INDICATOR_HTML, INDICATOR_SIZE, IndicatorMode } from './caret-indicator'
 import { sendCtrlV, isKeyDown } from './win32'
-import { captureSelection, snapshotClipboard } from './selection'
+import { captureSelection, snapshotClipboard, waitForModifiersReleased } from './selection'
 import { mainKeyVirtualCode } from './hotkey'
 import { initAutoUpdate, checkForUpdatesIfStale } from './updater'
 
@@ -209,7 +209,9 @@ function createTray(icon: Electron.NativeImage) {
 
 // Two shortcuts: dictation, and voice commands that act on the selected text ("make this shorter").
 type HotkeyMode = 'dictate' | 'command'
-const DEFAULT_COMMAND_HOTKEY = 'CommandOrControl+Alt+Space'
+// Alt-based so no app's everyday shortcut is taken over (Ctrl+W closes tabs and documents).
+const DEFAULT_HOTKEY = 'Alt+W'
+const DEFAULT_COMMAND_HOTKEY = 'Alt+Shift+W'
 
 let activeHotkey = ''
 let activeCommandHotkey = ''
@@ -363,7 +365,7 @@ function createWindow() {
     });
 
     // Global hotkey
-    const hotkey = store.get('hotkey', 'CommandOrControl+Shift+Space') as string
+    const hotkey = store.get('hotkey', DEFAULT_HOTKEY) as string
     if (!registerDictationHotkey(hotkey)) {
         // Without this the app would say "Ready" while the hotkey silently did nothing.
         if (!testDisplay) try {
@@ -521,6 +523,9 @@ ipcMain.handle('insert-text', async (event, text: string) => {
         const previous = await snapshotClipboard();
         await clipboard.writeText(text);
 
+        // A shortcut key still held would turn Ctrl+V into another shortcut. Returns at once when
+        // nothing is held, which is almost always by the time the text is ready.
+        await waitForModifiersReleased();
         // Native SendInput takes ~1ms; PowerShell (cold start + C# compile) takes hundreds.
         const success = sendCtrlV() || await sendCtrlVViaPowerShell();
 
@@ -550,7 +555,7 @@ ipcMain.handle('get-settings', () => {
 ipcMain.handle('set-setting', (event, key, value) => {
     // Dynamically update hotkey tracking with safe rollback
     if (key === 'hotkey') {
-        const previousHotkey = activeHotkey || (store.get('hotkey', 'CommandOrControl+Shift+Space') as string);
+        const previousHotkey = activeHotkey || (store.get('hotkey', DEFAULT_HOTKEY) as string);
         if (holdTimer) { clearInterval(holdTimer); holdTimer = null; holdActive = false; }
         globalShortcut.unregisterAll();
 

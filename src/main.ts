@@ -231,7 +231,7 @@ if (appElement) {
                <span class="text" id="record-btn-text">Click to Record</span>
                <canvas id="waveform-canvas"></canvas>
              </button>
-             <div class="shortcut-tip">Shortcut: <span id="hotkey-display">Ctrl + Shift + Space</span></div>
+             <div class="shortcut-tip">Shortcut: <span id="hotkey-display">Alt + W</span></div>
           </div>
           <div id="model-error-actions" style="display:none; margin-top: 10px; display: none; gap: 8px; flex-direction: row; justify-content: center;">
             <button class="btn btn-secondary btn-small" id="model-retry-btn">Retry</button>
@@ -381,6 +381,7 @@ if (appElement) {
               <div class="s-row">
                 <span class="s-label">Shortcut</span>
                 <select id="setting-hotkey-preset" class="s-control">
+                  <option value="Alt+W">Alt + W</option>
                   <option value="CommandOrControl+Shift+Space">Ctrl + Shift + Space</option>
                   <option value="Alt+Space">Alt + Space</option>
                   <option value="CommandOrControl+Alt+Space">Ctrl + Alt + Space</option>
@@ -391,7 +392,7 @@ if (appElement) {
               <div class="s-row" id="custom-hotkey-group" style="display: none;">
                 <span class="s-label">Custom<span class="s-hint" id="hotkey-help">Click Record, then press your keys</span></span>
                 <span class="s-inline">
-                  <input type="text" id="setting-hotkey" value="CommandOrControl+Shift+Space" readonly class="hotkey-input s-input">
+                  <input type="text" id="setting-hotkey" value="Alt+W" readonly class="hotkey-input s-input">
                   <button class="btn btn-secondary btn-small" id="setting-hotkey-record">Record</button>
                 </span>
               </div>
@@ -399,6 +400,7 @@ if (appElement) {
               <div class="s-row">
                 <span class="s-label">Voice command<span class="s-hint">Select text, press this and say what to change, like “make this shorter”. With nothing selected, it writes what you ask for</span></span>
                 <select id="setting-command-hotkey" class="s-control">
+                  <option value="Alt+Shift+W">Alt + Shift + W</option>
                   <option value="CommandOrControl+Alt+Space">Ctrl + Alt + Space</option>
                   <option value="CommandOrControl+Shift+E">Ctrl + Shift + E</option>
                   <option value="CommandOrControl+Shift+K">Ctrl + Shift + K</option>
@@ -1819,7 +1821,7 @@ if (appElement) {
   settingsBtn?.addEventListener('click', loadSettingsAndShow);
 
   let activeKeydownListener: ((e: KeyboardEvent) => void) | null = null;
-  let previousValidHotkey = 'CommandOrControl+Shift+Space';
+  let previousValidHotkey = 'Alt+W';
 
   const stopHotkeyRecording = (revertToPrevious = false) => {
     if (recordingHotkey) {
@@ -1865,7 +1867,7 @@ if (appElement) {
       previousValidHotkey = inputHotkey.value;
       btnHotkeyRecord.textContent = 'Listening...';
       inputHotkey.value = 'Press key combination...';
-      if (hotkeyHelp) hotkeyHelp.textContent = 'Press combination (e.g. Ctrl+Shift+Space, Alt+Space). Esc to cancel.';
+      if (hotkeyHelp) hotkeyHelp.textContent = 'Press combination (e.g. Alt+W, Ctrl+Shift+Space). Esc to cancel.';
       if (hotkeyHelp) hotkeyHelp.style.color = 'var(--text-secondary)';
 
       activeKeydownListener = (e: KeyboardEvent) => {

@@ -6,7 +6,8 @@ import http from 'http'
 import crypto from 'crypto'
 import { app } from 'electron'
 import { detectHardware, HardwareProfile } from './hardware'
-import { isFaithfulCleanup, stripAddedQuotes } from './fidelity'
+import { isFaithfulCleanup, isFaithfulSmartCleanup, stripAddedQuotes } from './fidelity'
+import { CleanupStyle, EXACT_PROMPT, SMART_PROMPT } from './cleanup-prompts'
 
 export interface ModelMetadata {
     id: string
@@ -821,8 +822,8 @@ export async function initLlm(onDownloadProgress?: (progress: { modelId: string;
 
 // Tuned against small (1B) models: this wording kept every dictated word (0% changed) on all test
 // inputs, whereas a looser "fix errors" prompt rewrote 25-65% of a long dictation.
-function buildSystemPrompt(surroundingContext?: string): string {
-    let prompt = `You add punctuation and capitalization to dictated speech. Keep every word exactly as spoken, in the same order. Never summarize, rephrase, shorten, or drop words. Never change "I" to "you". Reply with the corrected text only.`
+function buildSystemPrompt(surroundingContext?: string, style: CleanupStyle = 'exact'): string {
+    let prompt = style === 'smart' ? SMART_PROMPT : EXACT_PROMPT
 
     if (surroundingContext && surroundingContext.trim().length > 0) {
         const trimmed = surroundingContext.slice(-400)
@@ -854,14 +855,23 @@ function resetCleanupContext(): void {
     cleanupSeq = null
 }
 
-export function reformatText(rawText: string, surroundingContext?: string): Promise<string> {
+export function reformatText(rawText: string, surroundingContext?: string, style: CleanupStyle = 'exact'): Promise<string> {
     // One cleanup at a time: they share a single sequence.
-    const run = cleanupQueue.then(() => reformatTextNow(rawText, surroundingContext), () => reformatTextNow(rawText, surroundingContext))
+    const go = async () => {
+        if (style === 'smart') {
+            const smart = await reformatTextNow(rawText, surroundingContext, 'smart')
+            if (smart !== null) return smart
+            // The smart edit went too far; a word-for-word cleanup is still better than none.
+        }
+        return (await reformatTextNow(rawText, surroundingContext, 'exact')) ?? rawText
+    }
+    const run = cleanupQueue.then(go, go)
     cleanupQueue = run.catch(() => undefined)
     return run
 }
 
-async function reformatTextNow(rawText: string, surroundingContext?: string): Promise<string> {
+/** The cleaned text, or null when the model's output was rejected (the caller decides what then). */
+async function reformatTextNow(rawText: string, surroundingContext: string | undefined, style: CleanupStyle): Promise<string | null> {
     if (status !== 'ready' || !model || isReasoningModel()) {
         return rawText
     }
@@ -881,7 +891,7 @@ async function reformatTextNow(rawText: string, surroundingContext?: string): Pr
             contextSequence: seq,
             // Cleanup must answer within a second or two, so models that can think never do here.
             chatWrapper: await chatWrapperFor(model, activeModelId, false),
-            systemPrompt: buildSystemPrompt(surroundingContext)
+            systemPrompt: buildSystemPrompt(surroundingContext, style)
         })
 
         // Output is roughly the same length as the input, so size the budget from the input
@@ -897,15 +907,17 @@ async function reformatTextNow(rawText: string, surroundingContext?: string): Pr
 
         const cleaned = stripAddedQuotes(rawText, response)
 
-        // Reject empty, runaway or visibly truncated output and keep the dictated text.
-        if (!cleaned || cleaned.length < rawText.length * 0.6 || cleaned.length > rawText.length * 3) {
-            return rawText
+        // Reject empty, runaway or visibly truncated output. Smart editing legitimately shortens.
+        const minLength = style === 'smart' ? 0.4 : 0.6
+        if (!cleaned || cleaned.length < rawText.length * minLength || cleaned.length > rawText.length * 3) {
+            return null
         }
 
-        // Cleanup may punctuate and fix a slip, but must not rewrite what was said.
-        if (!isFaithfulCleanup(rawText, cleaned)) {
-            console.warn('[LLM] Cleanup changed too many words; keeping the original text')
-            return rawText
+        // Cleanup may punctuate and fix a slip (smart: also drop corrections), but must not rewrite.
+        const faithful = style === 'smart' ? isFaithfulSmartCleanup(rawText, cleaned) : isFaithfulCleanup(rawText, cleaned)
+        if (!faithful) {
+            console.warn(`[LLM] ${style} cleanup changed too much; ${style === 'smart' ? 'trying an exact cleanup' : 'keeping the original text'}`)
+            return null
         }
 
         return cleaned

@@ -32,7 +32,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     llmCancelDownload: () => ipcRenderer.invoke('llm-cancel-download'),
     llmDeleteModel: (modelId: string) => ipcRenderer.invoke('llm-delete-model', modelId),
     llmLoadModel: (modelId: string) => ipcRenderer.invoke('llm-load-model', modelId),
-    llmReformat: (text: string, context?: string) => ipcRenderer.invoke('llm-reformat', text, context),
+    llmReformat: (text: string, context?: string, style?: 'exact' | 'smart') => ipcRenderer.invoke('llm-reformat', text, context, style),
     llmChatSend: (messages: { role: 'user' | 'assistant' | 'system'; content: string }[]) => ipcRenderer.invoke('llm-chat-send', { messages }),
     llmChatAbort: () => ipcRenderer.invoke('llm-chat-abort'),
     llmChatClear: () => ipcRenderer.invoke('llm-chat-clear'),

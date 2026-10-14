@@ -51,3 +51,37 @@ export function stripAddedQuotes(raw: string, cleaned: string): string {
     }
     return text
 }
+
+/** Words in common, in order (longest common subsequence). */
+function commonWordCount(a: string[], b: string[]): number {
+    let prev = new Array(b.length + 1).fill(0)
+    for (let i = 1; i <= a.length; i++) {
+        const row = [0]
+        for (let j = 1; j <= b.length; j++) {
+            row[j] = a[i - 1] === b[j - 1] ? prev[j - 1] + 1 : Math.max(prev[j], row[j - 1])
+        }
+        prev = row
+    }
+    return prev[b.length]
+}
+
+/** List markers the smart style adds ("- ", "1. ") are formatting, not words the user said. */
+const stripListMarkers = (text: string): string => text.replace(/^[ \t]*(?:[-*•]|\d+[.)])[ \t]+/gm, '')
+
+/**
+ * True if `cleaned` is an acceptable "Smart edit" of `raw`. Smart editing removes corrections,
+ * false starts and repeats, so whole spans of words may go; but it must not reword or add, which
+ * is what a model does when it summarizes or answers instead. At most ~10% of the result's words
+ * may be new (two for short dictations) and at most ~40% of the dictated words may be dropped
+ * (four for short ones, where a single correction is a large share).
+ */
+export function isFaithfulSmartCleanup(raw: string, cleaned: string): boolean {
+    const a = toWords(raw)
+    const b = toWords(stripListMarkers(cleaned))
+    if (a.length === 0) return b.length === 0
+    if (b.length === 0) return false
+    const common = commonWordCount(a, b)
+    const added = b.length - common
+    const removed = a.length - common
+    return added <= Math.max(2, Math.round(a.length * 0.1)) && removed <= Math.max(4, Math.round(a.length * 0.4))
+}

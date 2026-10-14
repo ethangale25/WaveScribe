@@ -5,7 +5,7 @@ import { buildSetups, recommendDevice, defaultCpuThreads, modelFamily, SpeedSamp
 import { runSpeedTest, benchCpuThreads } from './speedtest';
 import { DEFAULT_MODEL_ID, MODEL_VRAM_MB, MODEL_DETAILS, isHfModelDownloaded } from './models';
 import { DEFAULT_SORT_DIR, MODEL_SORT_LABELS, parseModelSort, parseParamCount, sortModels, type ModelSort, type ModelSortKey } from './model-sort';
-import { escapeHtml, removeFillers, applyDictionary, applyAutoFormatting, countWords } from './postprocess';
+import { escapeHtml, removeFillers, applyDictionary, applyAutoFormatting, applySpokenCommands, countWords } from './postprocess';
 import { loadModel, transcribeAudio, isModelLoaded, getCurrentDevice, StreamingTranscriptionSession } from './transcribe';
 import { initDiagnostics } from './diagnostics';
 import { assessLlmFit, assessSpeechFit, fitLabel, isChatOnly, rankFor, recommendLlm, LlmFit, LlmPurpose, MemorySnapshot } from './llm-fit';
@@ -89,7 +89,7 @@ declare global {
       llmDeleteModel: (modelId: string) => Promise<{ success: boolean }>
       llmCancelDownload: () => Promise<{ success: boolean }>
       llmLoadModel: (modelId: string) => Promise<{ success: boolean; error?: string }>
-      llmReformat: (text: string, context?: string) => Promise<{ success: boolean; text: string; error?: string }>
+      llmReformat: (text: string, context?: string, style?: 'exact' | 'smart') => Promise<{ success: boolean; text: string; error?: string }>
       llmChatSend: (messages: { role: 'user' | 'assistant' | 'system'; content: string }[]) => Promise<{ success: boolean; text?: string; error?: string }>
       llmChatAbort: () => Promise<{ success: boolean }>
       llmChatClear: () => Promise<{ success: boolean }>
@@ -352,6 +352,13 @@ if (appElement) {
                 <span class="m-status" id="cleanup-model-status"></span>
                 <label class="switch" title="Turn text cleanup on or off"><input type="checkbox" id="setting-ai-reformat"><span class="slider round"></span></label>
                 <span class="m-chev">${icon('chevronRight')}</span>
+              </div>
+              <div class="s-row s-row-sub" id="row-cleanup-style">
+                <span class="s-label">Cleanup style<span class="s-hint" id="cleanup-style-hint">&nbsp;</span></span>
+                <select id="setting-cleanup-style" class="s-control">
+                  <option value="exact">Exact words</option>
+                  <option value="smart">Smart edit</option>
+                </select>
               </div>
               <div id="ai-progress-bar" class="s-progress" style="display: none;">
                 <div class="progress-bar-track"><div id="ai-progress-fill" class="progress-bar-fill" style="width: 0%;"></div></div>
@@ -978,11 +985,15 @@ if (appElement) {
           const autoCapEnabled = settings ? (settings.autoCap !== false) : true;
           const autoPunctEnabled = settings ? (settings.autoPunct !== false) : true;
           processedText = applyAutoFormatting(processedText, autoCapEnabled, autoPunctEnabled);
+          // Smart edit: "new paragraph", "new line" and "scratch that", on the whole dictation so
+          // a command can act across phrases.
+          const smartEdit = settings?.cleanupStyle === 'smart';
+          if (smartEdit) processedText = applySpokenCommands(processedText, autoCapEnabled, autoPunctEnabled);
 
           text = processedText;
 
           // AI cleanup of the whole text, only if it was not already done phrase by phrase.
-          if (settings?.aiReformat && window.electronAPI && !polishedBySession) {
+          if (settings?.aiReformat && window.electronAPI && !polishedBySession && text) {
             const llmStatus = await window.electronAPI.llmStatus();
             if (llmStatus.status === 'ready') {
               statusMessage!.textContent = 'Reformatting...';
@@ -990,7 +1001,7 @@ if (appElement) {
               if (islandText2) islandText2.textContent = 'Reformatting...';
 
               try {
-                const result = await window.electronAPI.llmReformat(text, await capturedContextPromise);
+                const result = await window.electronAPI.llmReformat(text, await capturedContextPromise, smartEdit ? 'smart' : 'exact');
                 if (result.success && result.text) {
                   text = result.text;
                 }
@@ -1145,7 +1156,9 @@ if (appElement) {
         const runSettings = window.electronAPI ? await window.electronAPI.getSettings() : null;
         const removeFillerWords = runSettings?.removeFiller !== false;
         let llmReady = false;
-        if (runSettings?.aiReformat && window.electronAPI) {
+        // Smart edit needs the whole dictation at once (a correction often spans phrases), so it
+        // runs after stop instead of phrase by phrase.
+        if (runSettings?.aiReformat && runSettings?.cleanupStyle !== 'smart' && window.electronAPI) {
           try { llmReady = (await window.electronAPI.llmStatus()).status === 'ready'; } catch { }
         }
         sessionPolishesWithLlm = llmReady;
@@ -1275,6 +1288,19 @@ if (appElement) {
 
   // AI Reformatting UI Elements
   const inputAiReformat = document.getElementById('setting-ai-reformat') as HTMLInputElement;
+  const inputCleanupStyle = document.getElementById('setting-cleanup-style') as HTMLSelectElement | null;
+  const CLEANUP_STYLE_HINTS: Record<string, string> = {
+    exact: 'Keeps every word you say; adds punctuation',
+    smart: 'Drops self-corrections and false starts, makes lists. Say “new paragraph” or “scratch that”',
+  };
+  const showCleanupStyleHint = () => {
+    const hint = document.getElementById('cleanup-style-hint');
+    if (hint && inputCleanupStyle) hint.textContent = CLEANUP_STYLE_HINTS[inputCleanupStyle.value] ?? '';
+  };
+  inputCleanupStyle?.addEventListener('change', async () => {
+    showCleanupStyleHint();
+    await window.electronAPI?.setSetting('cleanupStyle', inputCleanupStyle.value);
+  });
   const aiProgressBar = document.getElementById('ai-progress-bar');
   const aiProgressFill = document.getElementById('ai-progress-fill');
 
@@ -1731,8 +1757,10 @@ if (appElement) {
           scoreHistory = settings.metrics.scoreHistory || [];
         }
         if (settings.aiReformat !== undefined) inputAiReformat.checked = settings.aiReformat;
+        if (inputCleanupStyle) inputCleanupStyle.value = settings.cleanupStyle === 'smart' ? 'smart' : 'exact';
       }
     }
+    showCleanupStyleHint();
     updateDashboardUI();
     showSetupNote('');
     settingsModal?.classList.add('active');

@@ -22,6 +22,7 @@ Launches the app with a fake microphone playing the clip, in a throw-away profil
 history and stats are never touched) and with `WAVESCRIBE_NO_PASTE=1` (nothing is pasted). `--ptt` holds
 the real global hotkey; `--queue-test` presses it while a dictation is still processing; `--exe` runs a
 packaged build. Other tools: `llm-bench.mjs` / `llm-prompts.mjs` (AI cleanup speed and fidelity),
+`npm run eval:smart -- <model.gguf>` (the "Smart edit" cleanup style: corrections, lists, over-editing),
 `download-test.ts` (cancel, resume and checksum against Hugging Face).
 
 ## Test windows only open on screen #1

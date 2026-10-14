@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { stitchSegments } from '../src/stitch';
-import { isFaithfulCleanup, wordChangeRatio } from '../electron/fidelity';
+import { isFaithfulCleanup, isFaithfulSmartCleanup, wordChangeRatio } from '../electron/fidelity';
 import { findQuietestCut, countSpeechWindows, applyVAD } from '../src/dsp';
 import { PhraseSegmenter } from '../src/segmenter';
 import { assessLlmFit, isChatOnly, recommendLlm } from '../src/llm-fit';
@@ -120,7 +120,7 @@ test('dsp: findQuietestCut lands in the silent gap', () => {
 });
 
 // --- post-processing ---
-import { removeFillers, applyDictionary, applyAutoFormatting, escapeHtml } from '../src/postprocess';
+import { removeFillers, applyDictionary, applyAutoFormatting, escapeHtml, applySpokenCommands } from '../src/postprocess';
 
 test('postprocess: removes fillers without leaving stray punctuation, keeps "like"', () => {
     assert.equal(removeFillers('So, um, we should go'), 'So, we should go');
@@ -335,4 +335,36 @@ test('model sort: ignores a missing or unknown saved setting', () => {
     assert.deepEqual(parseModelSort(undefined), DEFAULT_MODEL_SORT);
     assert.deepEqual(parseModelSort({ key: 'bogus', dir: 'desc' }), DEFAULT_MODEL_SORT);
     assert.deepEqual(parseModelSort({ key: 'released', dir: 'desc' }), { key: 'released', dir: 'desc' });
+});
+
+test('spoken commands: new paragraph and new line at phrase boundaries', () => {
+    assert.equal(applySpokenCommands('Dear team. New paragraph. The launch is on Friday.'), 'Dear team.\n\nThe launch is on Friday.');
+    assert.equal(applySpokenCommands('Buy milk, new line, buy eggs.'), 'Buy milk.\nBuy eggs.');
+});
+
+test('spoken commands: ordinary speech that contains the words is left alone', () => {
+    assert.equal(applySpokenCommands('We need a new line of products.'), 'We need a new line of products.');
+    assert.equal(applySpokenCommands('We should scratch that itch soon.'), 'We should scratch that itch soon.');
+});
+
+test('spoken commands: scratch that removes the sentence before it', () => {
+    assert.equal(applySpokenCommands('I will be late. Actually I am sick. Scratch that. See you at nine.'), 'I will be late. See you at nine.');
+    assert.equal(applySpokenCommands('Send it now, scratch that.'), '');
+});
+
+test('smart cleanup check: accepts dropped corrections, false starts and list formatting', () => {
+    assert.ok(isFaithfulSmartCleanup('lets meet on tuesday no wait wednesday at three', "Let's meet on Wednesday at three."));
+    assert.ok(isFaithfulSmartCleanup('send the report to john i mean to sarah by five', 'Send the report to Sarah by five.'));
+    assert.ok(isFaithfulSmartCleanup('so i i think we we should um we should ship it next week', 'I think we should ship it next week.'));
+    assert.ok(isFaithfulSmartCleanup('for the trip we need tickets a hotel and a rental car', 'For the trip we need:\n- tickets\n- a hotel\n- a rental car'));
+    assert.ok(isFaithfulSmartCleanup('the steps are one wash two rinse three dry', 'The steps are:\n1. wash\n2. rinse\n3. dry'));
+});
+
+test('smart cleanup check: rejects rewording, summaries and answers', () => {
+    const raw = 'i went to the store this morning to buy some milk and bread and then i drove home because it started to rain';
+    assert.equal(isFaithfulSmartCleanup(raw, 'I bought groceries this morning and went home when it rained.'), false);
+    assert.equal(isFaithfulSmartCleanup(raw, 'Went shopping.'), false);
+    assert.equal(isFaithfulSmartCleanup('what time does the meeting start tomorrow', 'The meeting starts at 10 a.m. tomorrow.'), false);
+    assert.equal(isFaithfulSmartCleanup('write a poem about the ocean', 'Waves roll in upon the shore, the ocean sings forevermore.'), false);
+    assert.equal(isFaithfulSmartCleanup('hello there', ''), false);
 });

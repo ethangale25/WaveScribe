@@ -10,6 +10,7 @@
     "build": "vite build && electron-builder",
     "eval:build": "esbuild tools/eval/run.ts --bundle --platform=node --format=esm --outfile=tools/eval/run.mjs --external:@huggingface/transformers --external:onnxruntime-node --external:sharp --log-level=warning",
     "icons": "node scripts/make-icons.mjs",
+    "eval:smart": "esbuild tools/eval/smart-cleanup.ts --bundle --platform=node --format=esm --outfile=tools/eval/smart-cleanup.mjs --external:node-llama-cpp --log-level=warning && node tools/eval/smart-cleanup.mjs",
     "test": "esbuild tests/text-pipeline.test.ts --bundle --platform=node --format=esm --outfile=.test-build/text-pipeline.test.mjs --log-level=warning && node --test .test-build/text-pipeline.test.mjs"
   },
   "keywords": [],

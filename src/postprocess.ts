@@ -61,3 +61,47 @@ export function applyAutoFormatting(text: string, autoCap: boolean, autoPunct: b
 export function countWords(text: string): number {
     return text.split(/\s+/).filter(w => w.length > 0).length;
 }
+
+// Spoken editing commands, used by the "Smart edit" cleanup style. A command only counts at a
+// phrase boundary (start or end of the text, or next to punctuation), so ordinary speech such as
+// "a new line of products" or "scratch that itch" is left alone.
+const COMMAND = /(^|[.!?,;:]\s*|\s)(new paragraph|next paragraph|new line|next line|scratch that|delete that)\b[.!?,;:]?(?=\s|$)/gi;
+const BREAKS: Record<string, string> = {
+    'new paragraph': '\n\n', 'next paragraph': '\n\n', 'new line': '\n', 'next line': '\n',
+};
+
+/** Applies "new paragraph", "new line" and "scratch that" (removes the sentence before it). */
+export function applySpokenCommands(text: string, autoCap = true, autoPunct = true): string {
+    let out = '';
+    let last = 0;
+    let changed = false;
+    for (const m of text.matchAll(COMMAND)) {
+        const start = m.index! + m[1].length;
+        const end = m.index! + m[0].length;
+        const afterBoundary = m.index === 0 || /[.!?,;:]/.test(m[1]);
+        const beforeBoundary = /[.!?,;:]$/.test(m[0]) || end === text.length;
+        if (!afterBoundary && !beforeBoundary) continue;
+        changed = true;
+        out += text.slice(last, start);
+        const cmd = m[2].toLowerCase();
+        if (cmd === 'scratch that' || cmd === 'delete that') {
+            // Drop the sentence (or clause) just spoken: back to the previous sentence end or break.
+            const body = out.replace(/[\s,;:]+$/, '');
+            const cut = Math.max(body.search(/[.!?\n][^.!?\n]*[.!?]?$/) + 1, 0);
+            out = body.slice(0, cut);
+        } else {
+            out = out.replace(/[\s,;:]+$/, '');
+            if (autoPunct && out && !/[.!?\n]$/.test(out)) out += '.';
+            out += BREAKS[cmd];
+        }
+        last = end;
+    }
+    if (!changed) return text;
+    out += text.slice(last);
+
+    // Tidy the seams: no stray spaces or commas around breaks, and each new line starts a sentence.
+    out = out.replace(/[ \t]*\n[ \t,;:.]*/g, '\n').replace(/^[\s,;:.]+/, '').replace(/ {2,}/g, ' ').trim();
+    if (autoCap) out = out.replace(/(^|\n|[.!?]\s+)([a-z])/g, (_, p, c) => p + c.toUpperCase());
+    if (autoPunct && out && !/[.!?]$/.test(out)) out += '.';
+    return out;
+}

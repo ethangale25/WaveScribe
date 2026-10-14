@@ -770,9 +770,9 @@ ipcMain.handle('llm-status', () => {
     return getLlmStatus();
 });
 
-ipcMain.handle('llm-reformat', async (_event: any, text: string, context?: string) => {
+ipcMain.handle('llm-reformat', async (_event: any, text: string, context?: string, style?: 'exact' | 'smart') => {
     try {
-        const result = await reformatText(text, context);
+        const result = await reformatText(text, context, style === 'smart' ? 'smart' : 'exact');
         return { success: true, text: result };
     } catch (err: any) {
         return { success: false, text: text, error: err.message };

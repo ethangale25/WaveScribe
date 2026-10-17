@@ -56,6 +56,143 @@ body {
   --radial-bg: radial-gradient(circle at 50% -10%, rgba(43, 85, 245, 0.08) 0%, transparent 60%);
 }
 
+/* Extra themes. Each also carries .theme-dark or .theme-light (see THEMES in main.ts) for the
+   structural rules below; these blocks only swap the colours. */
+.theme-forest {
+  --accent-rgb: 61, 220, 132;
+  --logo-color: #3ddc84;
+  --bg-color: #0b150f;
+  --panel-bg: rgba(17, 34, 23, 0.8);
+  --text-primary: #eaf7ee;
+  --text-secondary: #86a592;
+  --border-color: #1f4030;
+  --panel-shadow: 0 4px 20px rgba(255, 255, 255, 0.05), 0 0 1px rgba(255, 255, 255, 0.12);
+  --btn-bg: #3ddc84;
+  --btn-hover: #6cf0a3;
+  --btn-text: #06210f;
+  --icon-btn-hover: rgba(255, 255, 255, 0.05);
+  --green: #3ddc84;
+  --red: #da3633;
+  --yellow: #d29922;
+  --grid-color: rgba(140, 255, 180, 0.03);
+  --radial-bg: radial-gradient(circle at 50% 12%, rgba(61, 220, 132, 0.17) 0%, transparent 55%);
+  --rec-bg: #3ddc84;
+  --rec-text: #06210f;
+  --chat-bg: #143324;
+  --chat-hover: #143324;
+  --chat-text: #c5f5d6;
+  --progress-fill: linear-gradient(90deg, #3ddc84, #6cf0a3);
+  --progress-glow: 0 0 8px #3ddc84;
+}
+
+.theme-amethyst {
+  --accent-rgb: 166, 120, 255;
+  --logo-color: #a678ff;
+  --bg-color: #110c1c;
+  --panel-bg: rgba(30, 21, 48, 0.8);
+  --text-primary: #f3ecff;
+  --text-secondary: #9d8fb8;
+  --border-color: #3a2a5c;
+  --panel-shadow: 0 4px 20px rgba(255, 255, 255, 0.05), 0 0 1px rgba(255, 255, 255, 0.12);
+  --btn-bg: #a678ff;
+  --btn-hover: #c9a8ff;
+  --btn-text: #1b0b3a;
+  --icon-btn-hover: rgba(255, 255, 255, 0.05);
+  --green: #a678ff;
+  --red: #da3633;
+  --yellow: #d29922;
+  --grid-color: rgba(190, 150, 255, 0.035);
+  --radial-bg: radial-gradient(circle at 50% 12%, rgba(166, 120, 255, 0.24) 0%, transparent 56%);
+  --rec-bg: #a678ff;
+  --rec-text: #1b0b3a;
+  --chat-bg: #2a1c47;
+  --chat-hover: #2a1c47;
+  --chat-text: #e2d2ff;
+  --progress-fill: linear-gradient(90deg, #a678ff, #c9a8ff);
+  --progress-glow: 0 0 8px #a678ff;
+}
+
+.theme-crimson {
+  --accent-rgb: 229, 49, 63;
+  --logo-color: #e5313f;
+  --bg-color: #120708;
+  --panel-bg: rgba(36, 14, 17, 0.82);
+  --text-primary: #ffecee;
+  --text-secondary: #b08086;
+  --border-color: #4a1d23;
+  --panel-shadow: 0 4px 20px rgba(255, 255, 255, 0.05), 0 0 1px rgba(255, 255, 255, 0.12);
+  --btn-bg: #e5313f;
+  --btn-hover: #ff5b66;
+  --btn-text: #ffffff;
+  --icon-btn-hover: rgba(255, 255, 255, 0.05);
+  --green: #e5313f;
+  --red: #ff5b66;
+  --yellow: #d29922;
+  --grid-color: rgba(255, 110, 120, 0.035);
+  --radial-bg: radial-gradient(circle at 50% 10%, rgba(229, 49, 63, 0.24) 0%, transparent 55%);
+  --rec-bg: #e5313f;
+  --rec-text: #ffffff;
+  --chat-bg: #33141a;
+  --chat-hover: #33141a;
+  --chat-text: #ffc8cd;
+  --progress-fill: linear-gradient(90deg, #e5313f, #ff5b66);
+  --progress-glow: 0 0 8px #e5313f;
+}
+
+.theme-graphite {
+  --accent-rgb: 250, 250, 250;
+  --logo-color: #fafafa;
+  --bg-color: #0a0a0a;
+  --panel-bg: rgba(24, 24, 24, 0.85);
+  --text-primary: #fafafa;
+  --text-secondary: #8a8a8a;
+  --border-color: #2e2e2e;
+  --panel-shadow: 0 4px 20px rgba(255, 255, 255, 0.05), 0 0 1px rgba(255, 255, 255, 0.12);
+  --btn-bg: #fafafa;
+  --btn-hover: #d4d4d4;
+  --btn-text: #0a0a0a;
+  --icon-btn-hover: rgba(255, 255, 255, 0.05);
+  --green: #fafafa;
+  --red: #da3633;
+  --yellow: #d29922;
+  --grid-color: rgba(255, 255, 255, 0.035);
+  --radial-bg: radial-gradient(circle at 50% 12%, rgba(255, 255, 255, 0.07) 0%, transparent 55%);
+  --rec-bg: #fafafa;
+  --rec-text: #0a0a0a;
+  --chat-bg: #1f1f1f;
+  --chat-hover: #1f1f1f;
+  --chat-text: #fafafa;
+  --progress-fill: linear-gradient(90deg, #fafafa, #d4d4d4);
+  --progress-glow: 0 0 8px #fafafa;
+}
+
+.theme-sand {
+  --accent-rgb: 196, 87, 45;
+  --logo-color: #c4572d;
+  --bg-color: #f7f1e8;
+  --panel-bg: rgba(255, 252, 246, 0.9);
+  --text-primary: #33261c;
+  --text-secondary: #8c7a68;
+  --border-color: #e5d9c7;
+  --panel-shadow: 0 4px 18px rgba(120, 90, 50, 0.12), 0 1px 3px rgba(0, 0, 0, 0.04);
+  --btn-bg: #c4572d;
+  --btn-hover: #a8451f;
+  --btn-text: #fff8f0;
+  --icon-btn-hover: rgba(120, 90, 50, 0.07);
+  --green: #c4572d;
+  --red: #c0392b;
+  --yellow: #c98a12;
+  --grid-color: rgba(120, 90, 50, 0.07);
+  --radial-bg: radial-gradient(circle at 50% -10%, rgba(196, 87, 45, 0.12) 0%, transparent 60%);
+  --rec-bg: #c4572d;
+  --rec-text: #fff8f0;
+  --chat-bg: #fffcf6;
+  --chat-hover: #fffcf6;
+  --chat-text: #8a3a18;
+  --progress-fill: linear-gradient(90deg, #c4572d, #a8451f);
+  --progress-glow: 0 0 8px #c4572d;
+}
+
 @keyframes appFadeIn {
   from {
     opacity: 0;
@@ -221,7 +358,7 @@ body {
 .version-chip.chip-busy {
   opacity: 1;
   color: var(--btn-bg);
-  background: rgba(43, 85, 245, 0.12);
+  background: rgba(var(--accent-rgb, 43, 85, 245), 0.12);
   cursor: default;
 }
 
@@ -232,7 +369,7 @@ body {
   opacity: 1;
   color: #fff;
   background: var(--btn-bg);
-  box-shadow: 0 0 0 0 rgba(43, 85, 245, 0.5);
+  box-shadow: 0 0 0 0 rgba(var(--accent-rgb, 43, 85, 245), 0.5);
   animation: chipPulse 2.4s ease-out infinite;
 }
 
@@ -241,8 +378,8 @@ body {
 }
 
 @keyframes chipPulse {
-  0% { box-shadow: 0 0 0 0 rgba(43, 85, 245, 0.45); }
-  70%, 100% { box-shadow: 0 0 0 7px rgba(43, 85, 245, 0); }
+  0% { box-shadow: 0 0 0 0 rgba(var(--accent-rgb, 43, 85, 245), 0.45); }
+  70%, 100% { box-shadow: 0 0 0 7px rgba(var(--accent-rgb, 43, 85, 245), 0); }
 }
 
 .drag-region {
@@ -324,10 +461,16 @@ body {
   line-height: 1.4;
 }
 
-/* Wave icon in title — always #2b55f5 */
+/* Wave icon in title: the SVG is a mask over the theme's logo colour (blue unless a theme says otherwise) */
 #wave-title-icon {
-  transition: filter 0.4s ease;
-  filter: invert(25%) sepia(90%) saturate(2000%) hue-rotate(220deg) brightness(100%) contrast(100%);
+  display: inline-block;
+  vertical-align: middle;
+  height: 50px;
+  aspect-ratio: 641 / 810;
+  background-color: var(--logo-color, #2b55f5);
+  -webkit-mask: var(--wave-mask) center / contain no-repeat;
+  mask: var(--wave-mask) center / contain no-repeat;
+  transition: background-color 0.4s ease;
 }
 
 .wave-char {
@@ -513,15 +656,15 @@ body {
 }
 
 .btn-primary {
-  background-color: #1a1a1a;
-  color: #ffffff;
+  background-color: var(--rec-bg, #1a1a1a);
+  color: var(--rec-text, #ffffff);
   box-shadow: 0 8px 16px rgba(0, 0, 0, 0.15);
   animation: subtlePulse 3s infinite ease-in-out;
 }
 
 .theme-dark .btn-primary {
-  background-color: #ffffff;
-  color: #000000;
+  background-color: var(--rec-bg, #ffffff);
+  color: var(--rec-text, #000000);
   box-shadow: 0 8px 16px rgba(255, 255, 255, 0.1);
   animation: subtlePulseDark 3s infinite ease-in-out;
 }
@@ -806,13 +949,13 @@ body {
 }
 
 .theme-dark .progress-bar-fill {
-  background: linear-gradient(90deg, #1f6feb, #388bfd);
-  box-shadow: 0 0 8px rgba(31, 111, 235, 0.5);
+  background: var(--progress-fill, linear-gradient(90deg, #1f6feb, #388bfd));
+  box-shadow: var(--progress-glow, 0 0 8px rgba(var(--accent-rgb, 31, 111, 235), 0.5));
 }
 
 .theme-light .progress-bar-fill {
-  background: linear-gradient(90deg, #2b55f5, #4e73f8);
-  box-shadow: 0 0 6px rgba(43, 85, 245, 0.3);
+  background: var(--progress-fill, linear-gradient(90deg, #2b55f5, #4e73f8));
+  box-shadow: var(--progress-glow, 0 0 6px rgba(var(--accent-rgb, 43, 85, 245), 0.3));
 }
 
 .model-badge-downloaded {
@@ -873,7 +1016,7 @@ body {
   max-height: 85vh;
   display: flex;
   flex-direction: column;
-  box-shadow: 0 20px 40px #2b54f565;
+  box-shadow: 0 20px 40px rgba(var(--accent-rgb, 43, 84, 245), 0.4);
   transform: translateY(20px);
   transition: transform 0.3s cubic-bezier(0.175, 0.885, 0.32, 1.275);
   color: var(--text-primary);
@@ -1061,7 +1204,7 @@ body {
 
 .hotkey-input:focus {
   border-color: var(--green);
-  box-shadow: 0 0 0 2px rgba(43, 85, 245, 0.2);
+  box-shadow: 0 0 0 2px rgba(var(--accent-rgb, 43, 85, 245), 0.2);
 }
 
 select {
@@ -1084,7 +1227,7 @@ select:hover {
 
 select:focus {
   border-color: var(--green);
-  box-shadow: 0 0 0 2px rgba(43, 85, 245, 0.2);
+  box-shadow: 0 0 0 2px rgba(var(--accent-rgb, 43, 85, 245), 0.2);
 }
 
 .btn-secondary {
@@ -1116,7 +1259,7 @@ select:focus {
   position: absolute;
   inset: 0;
   width: var(--p, 0%);
-  background: rgba(43, 85, 245, 0.55);
+  background: rgba(var(--accent-rgb, 43, 85, 245), 0.55);
   transition: width 0.3s ease;
   z-index: -1;
 }
@@ -1448,8 +1591,8 @@ body.mini-mode #island-dot {
 }
 
 .theme-dark .btn-chat-toggle {
-  background: #ffffff;
-  color: #0d1117;
+  background: var(--chat-bg, #ffffff);
+  color: var(--chat-text, #0d1117);
   box-shadow: 0 2px 10px rgba(255, 255, 255, 0.15), 0 0 1px rgba(255, 255, 255, 0.3);
 }
 
@@ -1460,8 +1603,8 @@ body.mini-mode #island-dot {
 }
 
 .theme-light .btn-chat-toggle {
-  background: #18181b;
-  color: #ffffff;
+  background: var(--chat-bg, #18181b);
+  color: var(--chat-text, #ffffff);
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
 }
 
@@ -1909,7 +2052,7 @@ body.mini-mode #island-dot {
 
 .chat-input-container:focus-within {
   border-color: var(--btn-bg);
-  box-shadow: 0 0 0 2px rgba(31, 111, 235, 0.2);
+  box-shadow: 0 0 0 2px rgba(var(--accent-rgb, 31, 111, 235), 0.2);
 }
 
 #chat-waveform-canvas {
@@ -2324,6 +2467,8 @@ body.mini-mode #island-dot {
 }
 
 .stat {
+  position: relative;
+  cursor: help;
   background: var(--bg-color);
   border: 1px solid rgba(128, 128, 128, 0.22);
   border-radius: 10px;
@@ -2345,6 +2490,43 @@ body.mini-mode #island-dot {
   color: var(--text-secondary);
   margin-top: 2px;
 }
+
+/* Hover (or keyboard focus) explanation under each stat */
+.stat::after {
+  content: attr(data-tip);
+  position: absolute;
+  top: calc(100% + 8px);
+  left: 50%;
+  transform: translate(-50%, -4px);
+  width: 200px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: var(--text-primary);
+  color: var(--bg-color);
+  font-size: 11px;
+  line-height: 1.4;
+  letter-spacing: 0;
+  text-transform: none;
+  font-weight: 500;
+  text-align: left;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.15s ease, transform 0.15s ease;
+  z-index: 20;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.25);
+}
+
+.stat:hover::after,
+.stat:focus-visible::after {
+  opacity: 1;
+  transform: translate(-50%, 0);
+}
+
+/* Keep the outer tips inside the window */
+.stat:first-child::after { left: 0; transform: translate(0, -4px); }
+.stat:first-child:hover::after, .stat:first-child:focus-visible::after { transform: translate(0, 0); }
+.stat:last-child::after { left: auto; right: 0; transform: translate(0, -4px); }
+.stat:last-child:hover::after, .stat:last-child:focus-visible::after { transform: translate(0, 0); }
 
 .s-section {
   margin-bottom: 20px;
@@ -2636,7 +2818,7 @@ body.mini-mode #island-dot {
 }
 
 @keyframes rowFlash {
-  0%, 25% { background: rgba(43, 85, 245, 0.18); }
+  0%, 25% { background: rgba(var(--accent-rgb, 43, 85, 245), 0.18); }
   100% { background: transparent; }
 }
 
@@ -2657,7 +2839,7 @@ body.mini-mode #island-dot {
   width: 34px;
   height: 34px;
   border-radius: 9px;
-  background: rgba(43, 85, 245, 0.14);
+  background: rgba(var(--accent-rgb, 43, 85, 245), 0.14);
   color: var(--btn-bg);
 }
 
@@ -2746,7 +2928,7 @@ body.mini-mode #island-dot {
 }
 
 .badge-rec {
-  background: rgba(43, 85, 245, 0.15);
+  background: rgba(var(--accent-rgb, 43, 85, 245), 0.15);
   color: var(--btn-bg);
 }
 

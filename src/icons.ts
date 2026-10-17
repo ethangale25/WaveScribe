@@ -6,6 +6,7 @@
 
 export type IconName =
   | 'mic' | 'sliders' | 'chat' | 'sun' | 'moon' | 'pen'
+  | 'shamrock' | 'flame' | 'gem' | 'cactus' | 'pencil'
   | 'chevronLeft' | 'chevronRight' | 'chevronDown'
   | 'arrowUp' | 'stop' | 'trash' | 'close' | 'wave';
 
@@ -16,6 +17,12 @@ const PATHS: Record<Exclude<IconName, 'wave'>, string> = {
   sun: '<circle cx="12" cy="12" r="4"/><path d="M12 2.5v2M12 19.5v2M2.5 12h2M19.5 12h2M5.3 5.3l1.4 1.4M17.3 17.3l1.4 1.4M5.3 18.7l1.4-1.4M17.3 6.7l1.4-1.4"/>',
   moon: '<path d="M20 14.5A8 8 0 1 1 9.5 4a6.5 6.5 0 0 0 10.5 10.5z"/>',
   pen: '<path d="M4 20h4L19 9l-4-4L4 16v4zM13.5 6.5l4 4"/>',
+  // Theme-button icons, one per colour theme (see THEMES in main.ts)
+  shamrock: '<path d="M12 11C9 8.5 9.5 3 12 3s3 5.5 0 8z"/><path d="M12 11C9 8.5 9.5 3 12 3s3 5.5 0 8z" transform="rotate(120 12 11)"/><path d="M12 11C9 8.5 9.5 3 12 3s3 5.5 0 8z" transform="rotate(-120 12 11)"/><path d="M12 12.5c0 4 .5 6 2.5 8.5"/>',
+  flame: '<g transform="translate(0 2)"><path d="M12 1.5c1 3.5 5 5.5 5 10.5a5 5 0 0 1-10 0c0-2 1-3.5 2-4.5.3 1.5 1 2.5 2 2.5 0-3-1-5.5 1-8.5z"/><path d="M12 17a2 2 0 0 1-2-2c0-1.2 1.2-2 2-3.2.8 1.2 2 2 2 3.2a2 2 0 0 1-2 2z"/></g>',
+  gem: '<path d="M6.5 4h11L22 9.5 12 21 2 9.5z"/><path d="M2 9.5h20M9.5 4L7.5 9.5 12 21M14.5 4l2 5.5L12 21"/>',
+  cactus: '<path d="M9.5 21V6.5a2.5 2.5 0 0 1 5 0V21M9.5 14H7a2 2 0 0 1-2-2V9M14.5 16h2.5a2 2 0 0 0 2-2v-3M6 21h12"/>',
+  pencil: '<path d="M5 19l1-4L16.5 4.5a1.8 1.8 0 0 1 2.5 0l.5.5a1.8 1.8 0 0 1 0 2.5L9 18l-4 1zM14.5 6.5l3 3M5 19l3-3"/>',
   chevronLeft: '<path d="M15 6l-6 6 6 6"/>',
   chevronRight: '<path d="M9 6l6 6-6 6"/>',
   chevronDown: '<path d="M6 9l6 6 6-6"/>',

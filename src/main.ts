@@ -10,7 +10,7 @@ import { loadModel, transcribeAudio, isModelLoaded, getCurrentDevice, StreamingT
 import { initDiagnostics } from './diagnostics';
 import { assessLlmFit, assessSpeechFit, fitLabel, isChatOnly, rankFor, recommendLlm, LlmFit, LlmPurpose, MemorySnapshot } from './llm-fit';
 import { renderChatMarkdown } from './chat-markdown';
-import { icon, TITLEBAR } from './icons';
+import { icon, TITLEBAR, type IconName } from './icons';
 // @ts-ignore
 import waveIcon from '../assets/wave.svg'
 // @ts-ignore
@@ -199,7 +199,7 @@ if (appElement) {
       <div id="dictation-view" class="app-view">
         <div class="header" style="margin-top: 15px;">
           <h1 id="wave-title" style="font-size: 34px; letter-spacing: -1px; margin-bottom: 0px; display: flex; align-items: center; justify-content: center; gap: 0px;">
-            <img src="${waveIcon}" id="wave-title-icon" class="wave-char" style="height: 50px; width: auto; display: inline-block; vertical-align: middle; --i: 0;" />
+            <span id="wave-title-icon" class="wave-char" style="--wave-mask: url(${waveIcon}); --i: 0;"></span>
             <span class="wave-char" style="--i: 1;">W</span><span class="wave-char" style="--i: 2;">a</span><span class="wave-char" style="--i: 3;">v</span><span class="wave-char" style="--i: 4;">e</span><span class="wave-char" style="--i: 5;">S</span><span class="wave-char" style="--i: 6;">c</span><span class="wave-char" style="--i: 7;">r</span><span class="wave-char" style="--i: 8;">i</span><span class="wave-char" style="--i: 9;">b</span><span class="wave-char" style="--i: 10;">e</span>
           </h1>
           <p style="font-size: 15px; color: var(--text-secondary); max-width: 80%; margin: 0 auto;">Make Waves. Not Keystrokes.</p>
@@ -325,10 +325,10 @@ if (appElement) {
 
         <div class="modal-body">
           <div class="stat-row">
-            <div class="stat"><div class="stat-value" id="metric-dictations">0</div><div class="stat-label">Dictations</div></div>
-            <div class="stat"><div class="stat-value" id="metric-words">0</div><div class="stat-label">Words</div></div>
-            <div class="stat"><div class="stat-value" id="metric-time">0m</div><div class="stat-label">Time saved</div></div>
-            <div class="stat"><div class="stat-value" id="metric-score">--</div><div class="stat-label">Clarity</div></div>
+            <div class="stat" tabindex="0" data-tip="Words you have dictated today, counted from your recent dictations."><div class="stat-value" id="metric-today">0</div><div class="stat-label">Today</div></div>
+            <div class="stat" tabindex="0" data-tip="Every word WaveScribe has typed for you since you started, after filler words were removed."><div class="stat-value" id="metric-words">0</div><div class="stat-label">Total words</div></div>
+            <div class="stat" tabindex="0" data-tip="Time you would have spent typing those words at 40 words per minute, minus the time you spent saying them."><div class="stat-value" id="metric-time">0m</div><div class="stat-label">Time saved</div></div>
+            <div class="stat" tabindex="0" data-tip="How fast you speak while dictating, in words per minute. Typing averages about 40."><div class="stat-value" id="metric-pace">--</div><div class="stat-label">Speaking pace</div></div>
           </div>
 
           <section class="s-section">
@@ -596,16 +596,40 @@ if (appElement) {
   let metricDictations = 0;
   let metricWords = 0;
   let metricTimeSavedSec = 0;
-  let scoreHistory: number[] = [];
+  // Speaking time and the words spoken in it (only dictations that were timed), for the pace stat.
+  let metricSpeakingSec = 0;
+  let metricTimedWords = 0;
+
+  const metricsPayload = () => ({
+    dictations: metricDictations,
+    words: metricWords,
+    timeSavedSec: metricTimeSavedSec,
+    speakingSec: metricSpeakingSec,
+    timedWords: metricTimedWords,
+  });
+  const loadMetrics = (m: any) => {
+    metricDictations = m.dictations || 0;
+    metricWords = m.words || 0;
+    metricTimeSavedSec = m.timeSavedSec || 0;
+    metricSpeakingSec = m.speakingSec || 0;
+    metricTimedWords = m.timedWords || 0;
+  };
 
   const updateDashboardUI = () => {
-    const elDict = document.getElementById('metric-dictations');
+    const elToday = document.getElementById('metric-today');
     const elWords = document.getElementById('metric-words');
     const elTime = document.getElementById('metric-time');
-    const elScore = document.getElementById('metric-score');
+    const elPace = document.getElementById('metric-pace');
 
-    if (elDict) elDict.textContent = metricDictations.toString();
-    if (elWords) elWords.textContent = metricWords.toString();
+    if (elToday) {
+      const midnight = new Date();
+      midnight.setHours(0, 0, 0, 0);
+      const todayWords = historyItems
+        .filter(item => item.timestamp >= midnight.getTime())
+        .reduce((sum, item) => sum + item.text.split(/\s+/).filter(Boolean).length, 0);
+      elToday.textContent = todayWords.toLocaleString();
+    }
+    if (elWords) elWords.textContent = metricWords.toLocaleString();
     if (elTime) {
       const hrs = Math.floor(metricTimeSavedSec / 3600);
       const mins = Math.floor((metricTimeSavedSec % 3600) / 60);
@@ -614,17 +638,11 @@ if (appElement) {
         elTime.textContent = `<1m`;
       }
     }
-    if (elScore) {
-      if (scoreHistory.length === 0) {
-        elScore.textContent = '--';
-        elScore.style.color = 'var(--text-secondary)';
-      } else {
-        const avg = scoreHistory.reduce((a, b) => a + b, 0) / scoreHistory.length;
-        elScore.textContent = Math.round(avg) + '';
-        if (avg >= 90) elScore.style.color = 'var(--green)';
-        else if (avg >= 70) elScore.style.color = 'var(--yellow)';
-        else elScore.style.color = 'var(--red)';
-      }
+    if (elPace) {
+      // Needs a little speech before the number means anything.
+      elPace.textContent = metricSpeakingSec >= 10 && metricTimedWords > 0
+        ? `${Math.round((metricTimedWords / metricSpeakingSec) * 60)} wpm`
+        : '--';
     }
   };
 
@@ -700,21 +718,44 @@ if (appElement) {
     });
   };
 
-  const syncThemeIcon = () => {
+  // The Theme button cycles through these in order. `base` is the dark/light class the structural
+  // CSS rules key off; `cls` (when set) swaps in that theme's colours on top of it.
+  const THEMES: { name: string; base: 'theme-dark' | 'theme-light'; cls?: string; icon: IconName }[] = [
+    { name: 'Midnight', icon: 'moon', base: 'theme-dark' },
+    { name: 'Daylight', icon: 'sun', base: 'theme-light' },
+    { name: 'Forest', icon: 'shamrock', base: 'theme-dark', cls: 'theme-forest' },
+    { name: 'Amethyst', icon: 'gem', base: 'theme-dark', cls: 'theme-amethyst' },
+    { name: 'Crimson', icon: 'flame', base: 'theme-dark', cls: 'theme-crimson' },
+    { name: 'Sand', icon: 'cactus', base: 'theme-light', cls: 'theme-sand' },
+    { name: 'Graphite', icon: 'pencil', base: 'theme-dark', cls: 'theme-graphite' },
+  ];
+  const THEME_KEY = 'wavescribe-theme';
+  let themeIndex = 0;
+  try {
+    const saved = THEMES.findIndex(t => t.name === localStorage.getItem(THEME_KEY));
+    if (saved >= 0) themeIndex = saved;
+  } catch { /* storage unavailable: start on the default theme */ }
+
+  const applyTheme = () => {
+    const t = THEMES[themeIndex];
+    if (themeProvider) {
+      for (const other of THEMES) {
+        themeProvider.classList.remove(other.base);
+        if (other.cls) themeProvider.classList.remove(other.cls);
+      }
+      themeProvider.classList.add(t.base);
+      if (t.cls) themeProvider.classList.add(t.cls);
+    }
     const el = document.getElementById('theme-icon');
-    if (el) el.innerHTML = icon(themeProvider?.classList.contains('theme-dark') ? 'moon' : 'sun');
+    if (el) el.innerHTML = icon(t.icon);
+    themeBtn?.setAttribute('title', `Theme: ${t.name} (click for the next one)`);
   };
-  syncThemeIcon();
+  applyTheme();
 
   themeBtn?.addEventListener('click', () => {
-    if (themeProvider?.classList.contains('theme-dark')) {
-      themeProvider.classList.remove('theme-dark');
-      themeProvider.classList.add('theme-light');
-    } else {
-      themeProvider?.classList.remove('theme-light');
-      themeProvider?.classList.add('theme-dark');
-    }
-    syncThemeIcon();
+    themeIndex = (themeIndex + 1) % THEMES.length;
+    applyTheme();
+    try { localStorage.setItem(THEME_KEY, THEMES[themeIndex].name); } catch { /* not persisted */ }
   });
 
   // Window Controls
@@ -998,9 +1039,6 @@ if (appElement) {
         lap(`transcribed (${text.trim().split(/\s+/).filter(Boolean).length} words)`);
 
         if (text && text.trim().length > 0) {
-          const originalWordsCount = polishedBySession
-            ? Math.max(sessionForRun?.getRawWordCount() ?? 0, countWords(text))
-            : countWords(text);
           let processedText = text.trim();
 
           // Phrases were already cleaned while recording; this pass catches anything that spans
@@ -1057,29 +1095,19 @@ if (appElement) {
           lap('post-processing + AI cleanup done');
 
           const finalWordsCount = text.split(/\s+/).filter((w: string) => w.length > 0).length;
-          const fillersRemoved = Math.max(0, originalWordsCount - finalWordsCount);
 
           if (finalWordsCount > 0 && !isCommand) {
             metricDictations += 1;
             metricWords += finalWordsCount;
-            metricTimeSavedSec += (finalWordsCount / 0.66); // 40 wpm
 
+            const typingSec = finalWordsCount / 0.66; // typing at 40 wpm
             const audioDurationSec = durationSec > 0 ? durationSec : (fullAudio.length / 16000);
             if (audioDurationSec > 0.1 && isFinite(audioDurationSec)) {
-              const wordsPerSec = finalWordsCount / audioDurationSec;
-              let clarity = (wordsPerSec / 2.5) * 100;
-              if (finalWordsCount < 3) {
-                clarity = 100;
-              } else {
-                if (clarity > 100) clarity = 100;
-                clarity -= (fillersRemoved * 5); // 5 points penalty per filler word
-                if (clarity < 10) clarity = 10;
-              }
-
-              if (isFinite(clarity) && !isNaN(clarity)) {
-                scoreHistory.push(clarity);
-                if (scoreHistory.length > 50) scoreHistory.shift();
-              }
+              metricSpeakingSec += audioDurationSec;
+              metricTimedWords += finalWordsCount;
+              metricTimeSavedSec += Math.max(0, typingSec - audioDurationSec);
+            } else {
+              metricTimeSavedSec += typingSec;
             }
 
             metricsDirty = true;
@@ -1121,12 +1149,7 @@ if (appElement) {
           if (window.electronAPI) {
             window.electronAPI.setSetting('dictationHistory', historyItems).catch(() => { });
             if (metricsDirty) {
-              window.electronAPI.setSetting('metrics', {
-                dictations: metricDictations,
-                words: metricWords,
-                timeSavedSec: metricTimeSavedSec,
-                scoreHistory: scoreHistory
-              }).catch(() => { });
+              window.electronAPI.setSetting('metrics', metricsPayload()).catch(() => { });
             }
           }
 
@@ -1135,12 +1158,7 @@ if (appElement) {
             window.electronAPI.showNotification('WaveScribe Dictation', preview).catch(() => { });
           }
         } else if (metricsDirty && window.electronAPI) {
-          window.electronAPI.setSetting('metrics', {
-            dictations: metricDictations,
-            words: metricWords,
-            timeSavedSec: metricTimeSavedSec,
-            scoreHistory: scoreHistory
-          }).catch(() => { });
+          window.electronAPI.setSetting('metrics', metricsPayload()).catch(() => { });
         }
       } catch (err) {
         console.error(err);
@@ -1798,12 +1816,7 @@ if (appElement) {
           dictionaryPairs = settings.dictionaryPairs;
           renderDictionary();
         }
-        if (settings.metrics) {
-          metricDictations = settings.metrics.dictations || 0;
-          metricWords = settings.metrics.words || 0;
-          metricTimeSavedSec = settings.metrics.timeSavedSec || 0;
-          scoreHistory = settings.metrics.scoreHistory || [];
-        }
+        if (settings.metrics) loadMetrics(settings.metrics);
         if (settings.aiReformat !== undefined) inputAiReformat.checked = settings.aiReformat;
         if (inputCleanupStyle) inputCleanupStyle.value = settings.cleanupStyle === 'smart' ? 'smart' : 'exact';
       }
@@ -2029,12 +2042,7 @@ if (appElement) {
         if (settings.dictionaryPairs && Array.isArray(settings.dictionaryPairs)) {
           dictionaryPairs = settings.dictionaryPairs;
         }
-        if (settings.metrics) {
-          metricDictations = settings.metrics.dictations || 0;
-          metricWords = settings.metrics.words || 0;
-          metricTimeSavedSec = settings.metrics.timeSavedSec || 0;
-          scoreHistory = settings.metrics.scoreHistory || [];
-        }
+        if (settings.metrics) loadMetrics(settings.metrics);
         if (settings.playSounds !== undefined) {
           playSoundsEnabled = settings.playSounds;
         }

@@ -46,6 +46,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     captureContext: () => ipcRenderer.invoke('capture-context'),
     updateGetState: () => ipcRenderer.invoke('update-get-state'),
     updateCheck: () => ipcRenderer.invoke('update-check'),
+    updateDownload: () => ipcRenderer.invoke('update-download'),
     updateInstall: () => ipcRenderer.invoke('update-install'),
     onUpdateState: (callback: (state: any) => void) => {
         const handler = (_: any, state: any) => callback(state);

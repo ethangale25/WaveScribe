@@ -12,13 +12,13 @@ const CHECK_INTERVAL_MS = 60 * 60 * 1000
 const FOCUS_CHECK_MIN_GAP_MS = 15 * 60 * 1000
 let lastCheck = 0
 
-export type UpdateStatus = 'dev' | 'idle' | 'checking' | 'up-to-date' | 'downloading' | 'ready' | 'error'
+export type UpdateStatus = 'dev' | 'idle' | 'checking' | 'up-to-date' | 'available' | 'downloading' | 'ready' | 'error'
 
 export interface UpdateState {
     /** The version running now. */
     version: string
     status: UpdateStatus
-    /** The version being downloaded or ready to install. */
+    /** The version on offer, being downloaded, or ready to install. */
     newVersion?: string
     percent?: number
 }
@@ -32,7 +32,7 @@ function setState(next: Partial<UpdateState>): void {
 }
 
 function check(): void {
-    if (state.status === 'downloading' || state.status === 'ready') return
+    if (state.status === 'available' || state.status === 'downloading' || state.status === 'ready') return
     lastCheck = Date.now()
     autoUpdater.checkForUpdates().catch(() => { })
 }
@@ -43,13 +43,22 @@ export function checkForUpdatesIfStale(): void {
     check()
 }
 
-// Checks GitHub Releases, downloads new versions in the background and reports progress to the
-// window, which offers a one-click restart. Unchosen updates still install when the app quits.
+// Checks GitHub Releases and tells the window when a newer version exists. Nothing is downloaded
+// until the user confirms (update-download); the window then installs it as soon as it is ready.
 export function initAutoUpdate(onState: (state: UpdateState) => void, getWindow: () => BrowserWindow | null): void {
     sendState = onState
 
     ipcMain.handle('update-get-state', () => state)
     ipcMain.handle('update-check', () => { if (app.isPackaged) check(); return state })
+    ipcMain.handle('update-download', () => {
+        if (state.status !== 'available') return state
+        setState({ status: 'downloading', percent: 0 })
+        autoUpdater.downloadUpdate().catch((err) => {
+            console.warn('[Updater] Download failed:', err?.message ?? err)
+            setState({ status: 'error' })
+        })
+        return state
+    })
     // Silent install, then reopen: no installer pages for the user to click through.
     // The "Updating WaveScribe" window covers the minute or two the installer takes, so the app
     // does not simply vanish; it appears where the WaveScribe window was before the app closes.
@@ -74,12 +83,12 @@ export function initAutoUpdate(onState: (state: UpdateState) => void, getWindow:
         return
     }
 
-    autoUpdater.autoDownload = true
+    autoUpdater.autoDownload = false
     autoUpdater.autoInstallOnAppQuit = true
 
     autoUpdater.on('checking-for-update', () => setState({ status: 'checking' }))
     autoUpdater.on('update-not-available', () => setState({ status: 'up-to-date', newVersion: undefined, percent: undefined }))
-    autoUpdater.on('update-available', (info) => setState({ status: 'downloading', newVersion: info.version, percent: 0 }))
+    autoUpdater.on('update-available', (info) => setState({ status: 'available', newVersion: info.version, percent: undefined }))
     autoUpdater.on('download-progress', (p) => setState({ status: 'downloading', percent: Math.round(p.percent) }))
     autoUpdater.on('update-downloaded', (info) => {
         setState({ status: 'ready', newVersion: info.version, percent: 100 })

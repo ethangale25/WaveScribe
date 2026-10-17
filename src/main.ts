@@ -102,6 +102,7 @@ declare global {
       captureContext: () => Promise<{ success: boolean; text: string }>
       updateGetState: () => Promise<UpdateState>
       updateCheck: () => Promise<UpdateState>
+      updateDownload: () => Promise<UpdateState>
       updateInstall: () => Promise<UpdateState>
       onUpdateState: (callback: (state: UpdateState) => void) => () => void
       showNotification: (title: string, body: string) => Promise<{ success: boolean }>
@@ -115,7 +116,7 @@ declare global {
 
 interface UpdateState {
   version: string
-  status: 'dev' | 'idle' | 'checking' | 'up-to-date' | 'downloading' | 'ready' | 'error'
+  status: 'dev' | 'idle' | 'checking' | 'up-to-date' | 'available' | 'downloading' | 'ready' | 'error'
   newVersion?: string
   percent?: number
 }
@@ -2288,8 +2289,8 @@ if (appElement) {
 
   // --- Version and updates ---
   // The title bar shows the version. The app checks for updates by itself; as soon as one is found the
-  // chip becomes "Update to vX". One click installs it: straight away if it has finished
-  // downloading in the background, otherwise as soon as it has (showing progress meanwhile).
+  // chip becomes "Update to vX". Nothing downloads until the user clicks it; that one click then
+  // downloads (showing progress) and installs by itself, restarting into the new version.
   const versionChip = document.getElementById('version-chip') as HTMLButtonElement | null;
   let updateState: UpdateState | null = null;
   let installWhenReady = false;
@@ -2306,7 +2307,7 @@ if (appElement) {
     if (u.status === 'dev') {
       html = escapeHtml(`v${u.version} \u00b7 dev`);
       title = 'Development build: updates are off';
-    } else if (u.status === 'downloading' || u.status === 'ready') {
+    } else if (u.status === 'available' || u.status === 'downloading' || u.status === 'ready') {
       const target = `Update to v${u.newVersion}`;
       if (installWhenReady) {
         html = escapeHtml(u.status === 'ready' ? 'Restarting\u2026' : `Updating ${u.percent ?? 0}%`);
@@ -2317,7 +2318,7 @@ if (appElement) {
         mode = 'ready';
         title = u.status === 'ready'
           ? `Version ${u.newVersion} is ready. Click to restart into it (a few seconds).`
-          : `Version ${u.newVersion} is downloading. Click to install it as soon as it is ready.`;
+          : `Version ${u.newVersion} is available. Click to download and install it; WaveScribe restarts by itself.`;
       }
     } else if (note) {
       html = escapeHtml(note);
@@ -2350,9 +2351,10 @@ if (appElement) {
   versionChip?.addEventListener('click', async () => {
     if (!window.electronAPI || !updateState) return;
     const status = updateState.status;
-    if (status === 'downloading' || status === 'ready') {
+    if (status === 'available' || status === 'downloading' || status === 'ready') {
       installWhenReady = true;
       renderVersionChip();
+      if (status === 'available') await window.electronAPI.updateDownload();
       if (status === 'ready') installWhenIdle();
     } else if (status !== 'dev') {
       manualCheck = true;

@@ -96,7 +96,17 @@ export class AsrClient {
         this.modelName = modelName;
         this.device = device;
 
-        await this.request<void>({ type: 'load', model: modelName, device, dtype, threads }, onProgress);
+        try {
+            await this.request<void>({ type: 'load', model: modelName, device, dtype, threads }, onProgress);
+        } catch (err) {
+            // Out of memory can leave the worker's WebGPU/WASM heap unusable; the retry (CPU
+            // fallback) must start in a fresh one.
+            if (err instanceof RangeError) {
+                this.worker?.terminate();
+                this.worker = null;
+            }
+            throw err;
+        }
         this.loaded = true;
     }
 
@@ -156,6 +166,9 @@ export const getCurrentModelName = (): string => defaultClient.getCurrentModelNa
 export const disposeTranscriber = (): Promise<void> => defaultClient.dispose();
 export const transcribeAudio = (audioData: Float32Array, chunkSize: number = 30): Promise<string> =>
     defaultClient.transcribe(audioData, chunkSize);
+
+/** Longest recording decoded again as one piece at the end: Whisper's single 30s window. */
+export const FULL_PASS_MAX_SAMPLES = 16000 * 30;
 
 /**
  * Manages streaming background transcription for phrase-chunked audio during active recording.
@@ -263,5 +276,45 @@ export class StreamingTranscriptionSession {
         }
 
         return assembled;
+    }
+
+    /**
+     * Like finalize(), but also decodes the whole recording in one pass and prefers that result.
+     * The phrase-by-phrase text is a draft (it is what the live preview showed); a single decode
+     * lets the model use the full sentence and topic, so words and punctuation come out coherent.
+     * Falls back to the draft when the recording is too long for one window or the full decode
+     * fails or looks truncated. `usedFullPass` tells the caller the text has not been through the
+     * per-phrase cleanup, so it still needs the whole-text one.
+     */
+    public async finalizeWithFullPass(
+        trailingPcm: Float32Array | undefined,
+        fullPcm: Float32Array | undefined
+    ): Promise<{ text: string; usedFullPass: boolean }> {
+        const eligible = !!fullPcm && fullPcm.length >= MIN_PHRASE_SAMPLES && fullPcm.length <= FULL_PASS_MAX_SAMPLES;
+        // With no phrase dispatched while talking, the trailing piece already is the whole
+        // recording; decoding it a second time would only double the wait.
+        const wholeIsOnePiece = this.chunks.length === 0;
+        const draftPromise = this.finalize(trailingPcm);
+        if (!eligible || wholeIsOnePiece) return { text: await draftPromise, usedFullPass: false };
+
+        // Queued behind the phrases still decoding, so both results arrive without extra waiting
+        // on the main thread. A failed full decode must not lose the draft.
+        const fullPromise = this.transcribe(fullPcm!).catch((err) => {
+            console.warn('[StreamingSession] Full-recording pass failed, using phrase text:', err);
+            return '';
+        });
+        const [draft, full] = await Promise.all([draftPromise.catch(() => ''), fullPromise]);
+
+        const fullText = full.trim().replace(/\s{2,}/g, ' ');
+        const draftWords = draft.split(/\s+/).filter(Boolean).length;
+        const fullWords = fullText.split(/\s+/).filter(Boolean).length;
+        // A much shorter result means the model gave up early or hallucinated a stop; trust the draft.
+        const looksTruncated = draftWords >= 4 && fullWords < draftWords * 0.6;
+        if (fullText && !looksTruncated) return { text: fullText, usedFullPass: true };
+
+        if (!draft && this.lastError) {
+            throw this.lastError instanceof Error ? this.lastError : new Error(String(this.lastError));
+        }
+        return { text: draft, usedFullPass: false };
     }
 }

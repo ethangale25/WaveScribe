@@ -11,9 +11,12 @@ export interface PhraseMeta {
 export type PhraseCallback = (chunk: Float32Array, meta: PhraseMeta) => void;
 
 const MIN_SPEECH_SAMPLES = SAMPLE_RATE * 0.45; // Minimum ~450ms before considering a pause
-const PAUSE_SILENCE_SAMPLES = SAMPLE_RATE * 0.38; // ~380ms silence constitutes a sentence break
-const MAX_PHRASE_SAMPLES = SAMPLE_RATE * 6.5; // Max 6.5s per chunk to prevent buffer buildup
-const CUT_SEARCH_SAMPLES = SAMPLE_RATE * 1.5; // On a forced cut, look for the quietest spot in the last 1.5s
+// A breath or a thinking pause inside a sentence is routinely 400-700ms, so a break has to be longer
+// than that to mean "end of a thought". Whisper decodes up to 30s at once and is more accurate with
+// the whole sentence in front of it, so chunks are kept long and the cap is only a safety limit.
+const PAUSE_SILENCE_SAMPLES = SAMPLE_RATE * 0.9; // ~900ms silence constitutes a sentence break
+const MAX_PHRASE_SAMPLES = SAMPLE_RATE * 20; // Max 20s per chunk to prevent buffer buildup
+const CUT_SEARCH_SAMPLES = SAMPLE_RATE * 3; // On a forced cut, look for the quietest spot in the last 3s
 
 export interface FinishResult {
     /** Normalized, VAD-trimmed full recording. Empty unless `includeFull` was requested. */

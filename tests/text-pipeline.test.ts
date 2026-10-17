@@ -79,18 +79,27 @@ function concat(...parts: Float32Array[]): Float32Array {
 test('segmenter: splits at a natural pause and reports it as not forced', () => {
     const phrases: Array<{ len: number; forced: boolean }> = [];
     const s = new PhraseSegmenter((pcm, meta) => phrases.push({ len: pcm.length, forced: meta.forcedCut }));
-    feed(s, concat(tone(2), silence(0.6), tone(1.5)));
+    feed(s, concat(tone(2), silence(1.2), tone(1.5)));
     assert.equal(phrases.length, 1);
     assert.equal(phrases[0].forced, false);
     const { trailingAudio } = s.finish(false);
     assert.ok(trailingAudio.length > SR); // the second burst is still pending as the trailing fragment
 });
 
+test('segmenter: a pause inside a sentence does not split the phrase', () => {
+    const phrases: number[] = [];
+    const s = new PhraseSegmenter((pcm) => phrases.push(pcm.length));
+    feed(s, concat(tone(2), silence(0.6), tone(2), silence(0.6), tone(1.5)));
+    assert.equal(phrases.length, 0);
+    const { trailingAudio } = s.finish(false);
+    assert.ok(trailingAudio.length > 5 * SR); // all three bursts stay together in one phrase
+});
+
 test('segmenter: a long unbroken stretch is cut at the quiet spot, not mid-burst', () => {
     const phrases: Array<{ forced: boolean }> = [];
     const s = new PhraseSegmenter((_, meta) => phrases.push({ forced: meta.forcedCut }));
-    // 8s of speech with a 150ms dip (shorter than a pause) around 5.6s, inside the final 1.5s search window.
-    feed(s, concat(tone(5.6), silence(0.15), tone(2.5)));
+    // 22s of speech with a 150ms dip (shorter than a pause) around 19s, inside the final 3s search window.
+    feed(s, concat(tone(19), silence(0.15), tone(3)));
     assert.ok(phrases.length >= 1);
     assert.equal(phrases[0].forced, true);
 });
@@ -373,4 +382,46 @@ test('smart cleanup check: rejects rewording, summaries and answers', () => {
 test('voice command: the selection is sent fenced off from the instruction, and left out when empty', () => {
     assert.equal(commandUserMessage('make this shorter', 'Some text.'), 'Instruction: make this shorter\n\nText:\n"""\nSome text.\n"""');
     assert.equal(commandUserMessage('write a haiku', '  '), 'Instruction: write a haiku');
+});
+
+// --- whole-recording final pass ---
+import { StreamingTranscriptionSession } from '../src/transcribe';
+
+const pcm = (seconds: number) => new Float32Array(Math.round(seconds * SR)).fill(0.1);
+
+test('final pass: the whole-recording text replaces the choppy phrase draft', async () => {
+    const decode = async (p: Float32Array) =>
+        p.length > 8 * SR ? 'I want to move the invoice export to the new billing service.' : 'To the new building service.';
+    const s = new StreamingTranscriptionSession(decode);
+    s.addPhraseChunk(pcm(3), { forcedCut: false });
+    const r = await s.finalizeWithFullPass(undefined, pcm(10));
+    assert.equal(r.usedFullPass, true);
+    assert.equal(r.text, 'I want to move the invoice export to the new billing service.');
+});
+
+test('final pass: a recording too long for one window keeps the stitched phrases', async () => {
+    const s = new StreamingTranscriptionSession(async () => 'one two three four five');
+    s.addPhraseChunk(pcm(3), { forcedCut: false });
+    const r = await s.finalizeWithFullPass(undefined, pcm(45));
+    assert.equal(r.usedFullPass, false);
+    assert.equal(r.text, 'one two three four five');
+});
+
+test('final pass: a truncated or failed full decode falls back to the draft', async () => {
+    const draftText = 'send me the schedule by Thursday please';
+    const truncating = new StreamingTranscriptionSession(async (p) => (p.length > 8 * SR ? 'send me' : draftText));
+    truncating.addPhraseChunk(pcm(3), { forcedCut: false });
+    assert.deepEqual(await truncating.finalizeWithFullPass(undefined, pcm(10)), { text: draftText, usedFullPass: false });
+
+    const failing = new StreamingTranscriptionSession(async (p) => { if (p.length > 8 * SR) throw new Error('boom'); return draftText; });
+    failing.addPhraseChunk(pcm(3), { forcedCut: false });
+    assert.deepEqual(await failing.finalizeWithFullPass(undefined, pcm(10)), { text: draftText, usedFullPass: false });
+});
+
+test('final pass: when nothing was dispatched while talking, the recording is decoded only once', async () => {
+    let calls = 0;
+    const s = new StreamingTranscriptionSession(async () => { calls++; return 'a single short dictation here'; });
+    const r = await s.finalizeWithFullPass(pcm(8), pcm(8));
+    assert.equal(calls, 1);
+    assert.equal(r.usedFullPass, false);
 });

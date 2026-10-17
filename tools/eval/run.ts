@@ -90,14 +90,14 @@ async function main() {
     }
 
     const tStop = Date.now();
-    const { trailingAudio } = segmenter.finish(false);
-    const streamText = await session.finalize(trailingAudio);
+    const { trailingAudio, fullAudio } = segmenter.finish(true);
+    const { text: streamText, usedFullPass } = await session.finalizeWithFullPass(trailingAudio, fullAudio);
     const streamMs = Date.now() - tStop;
 
     console.log('\nphrases dispatched while talking:', phrases.length ? phrases.join(', ') : '(none)');
     console.log(`reference : ${reference}`);
     console.log(`\nSINGLE-PASS (old)   stop->text ${String(baseMs).padStart(6)}ms   WER ${(wer(reference, baseText) * 100).toFixed(1)}%\n  ${baseText}`);
-    console.log(`\nSTREAMING (new)     stop->text ${String(streamMs).padStart(6)}ms   WER ${(wer(reference, streamText) * 100).toFixed(1)}%\n  ${streamText}`);
+    console.log(`\nSTREAMING+FINAL PASS stop->text ${String(streamMs).padStart(6)}ms   WER ${(wer(reference, streamText) * 100).toFixed(1)}%\n  ${streamText}`);
     process.exit(0);
 }
 

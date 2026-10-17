@@ -954,10 +954,10 @@ if (appElement) {
       }
 
       try {
-        // With streaming, the phrases were already transcribed while recording, so skip
-        // merging/VAD/normalizing the whole recording again.
+        // The full recording is kept even when streaming: the phrases are only a draft, and the
+        // final text comes from decoding the whole recording in one pass (see finalizeWithFullPass).
         const { fullAudio, trailingAudio, durationSec, hadAudio } = await stopRecordingDirect({
-          includeFull: activeStreamingSession === null
+          includeFull: true
         });
 
         lap('audio stopped');
@@ -979,9 +979,13 @@ if (appElement) {
 
         let text = '';
         const sessionForRun = activeStreamingSession;
-        const polishedBySession = sessionPolishesWithLlm;
+        let polishedBySession = sessionPolishesWithLlm;
         if (activeStreamingSession) {
-          text = await activeStreamingSession.finalize(trailingAudio);
+          const result = await activeStreamingSession.finalizeWithFullPass(trailingAudio, fullAudio);
+          text = result.text;
+          // The full-recording text has not been through the per-phrase cleanup, so the whole-text
+          // AI cleanup below has to run on it.
+          if (result.usedFullPass) polishedBySession = false;
         } else {
           let audioForTranscription = fullAudio;
           if (vadEnabled) {
@@ -3263,10 +3267,10 @@ if (appElement) {
       chatInputTextarea.placeholder = 'Transcribing voice prompt...';
 
       try {
-        const { fullAudio, trailingAudio } = await stopRecordingDirect({ includeFull: chatStreamingSession === null });
+        const { fullAudio, trailingAudio } = await stopRecordingDirect({ includeFull: true });
         let transcribed = '';
         if (chatStreamingSession) {
-          transcribed = await chatStreamingSession.finalize(trailingAudio);
+          transcribed = (await chatStreamingSession.finalizeWithFullPass(trailingAudio, fullAudio)).text;
         } else if (fullAudio && fullAudio.length > 0) {
           transcribed = await transcribeAudio(fullAudio, 30);
         }
